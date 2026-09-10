@@ -2,8 +2,9 @@
 
 A star map for tracking big, multi-level projects. One epic is a sun, its tickets
 are stars orbiting it, sub-tickets orbit their parent, and **a star only lights up
-when its ticket is done**. Dependencies are drawn as flowing arcs, so "what is
-holding us up" is visible from across the room.
+when its ticket is done**. Dependencies are drawn as flowing arcs, and the tickets
+other work is waiting on burn hottest, so "what is holding us up" is visible from
+across the room.
 
 Currently running on **dummy data** — no Jira connection yet (that is the next step;
 see [Wiring up Jira](#wiring-up-jira)).
@@ -17,6 +18,34 @@ npm run dev      # http://localhost:5173
 
 `npm run build` produces a static bundle in `dist/` — it is a plain SPA, so it can
 be dropped on any static host or opened through `npm run preview`.
+
+## Deploy it
+
+```bash
+docker compose up -d          # builds the image on first run, then serves on :8080
+```
+
+That is the whole deployment. The image is a two-stage build — Node compiles the
+bundle, then the result is copied into nginx and the toolchain is thrown away, so
+what ships is ~70 MB and contains no source, no `node_modules` and no build tools.
+
+| | |
+| --- | --- |
+| Port | `8080` on the host. Set `CONSTELLATION_PORT=80` in a `.env` file beside the compose file to serve the host directly. |
+| Restart | `unless-stopped`, so the service returns after a host reboot. Without this the URL quietly dies the first time the box restarts. |
+| Health | `GET /healthz` returns `ok`; Compose polls it every 30s, so `docker ps` reports the container healthy rather than merely running. |
+| Redeploy | `docker compose up -d --build` after a `git pull`. |
+
+Caching is split deliberately: Vite fingerprints filenames under `/assets/`, so
+those are served `immutable` for a year, while `index.html` is sent `no-cache`.
+That combination is what makes a redeploy take effect immediately instead of
+leaving people on a cached page that asks for bundles which no longer exist.
+
+The container is engine-agnostic — image names are fully qualified and no
+engine-specific features are used, so the same files run under `podman compose`
+locally and `docker compose` on the server. If you build the image on a Mac and
+push it rather than building on the host, add `--platform linux/amd64`; building
+on the AWS box itself needs nothing.
 
 ## What you see
 
@@ -45,17 +74,30 @@ constellation just reads **delivered** — it is never late, whatever the date s
 | Star, 20% of sun | L2 sub-ticket |
 | Star, 14% of sun | L3 (supported, used by the *Merchant Onboarding* demo epic) |
 | Unlit grey body | Not started |
-| Blue flicker | In progress |
-| Red, slowly pulsing | **Blocking others** — something is waiting on this ticket and it isn't done. Red never means "this ticket is stuck"; it means other work is stuck behind it. |
-| Full starlight | Done |
+| Blue flicker, tight glow | In progress |
+| Red, the hottest point on the map | **Blocking others** — something is waiting on this ticket and it isn't done. Red never means "this ticket is stuck"; it means other work is stuck behind it. |
+| Red breathing to amber, ~2s | Blocking others, **and being worked on** — the amber says it is on its way out of red |
+| Gold, gentle core with a wide halo | Done |
 | Thin straight line | Parent → child; it brightens once both ends are lit |
 | Red dashed arc | Waiting on a blocker that hasn't started |
 | Amber dashed arc | Waiting on a blocker that is in progress |
 | Green dashed arc | Path clear — the blocker is done |
 
+Brightness and glow say different things. **Brightness ranks how much a ticket
+wants your attention**, so blockers are the brightest stars on the map — they are
+where the project is actually stuck. **The halo says what state it is in**: a
+tight, hot point means deal with me, a broad soft glow means finished. Done work
+is deliberately *calmer* than a blocker, and warms the constellation instead of
+shouting.
+
 Dependency arcs are drawn in the colour of the **blocker's** progress, with dashes
 flowing blocker → blocked, so a chain reads as a pipeline: red at the head, green
-behind it.
+behind it. A blocking star breathes towards the same amber the arcs use for "in
+progress", so the star and the arc leaving it tell the same story.
+
+The stats panel top-left carries the epic's due date, and its progress bar is
+**blue while work remains and gold only at 100%** — gold is kept for finished
+work, so that nothing on screen is permanently wearing the colour of the reward.
 
 **Status is only entered at the leaves.** A parent is done when all its children
 are done, in progress when any child has started, and otherwise not started. So
@@ -90,7 +132,8 @@ bookmarked or pasted into a standup thread.
 ```
 src/
   model/types.ts    Domain model (Ticket, Constellation, Galaxy) + derived helpers
-  model/dummy.ts    Deterministic fake galaxy: 5 epics, ~200 tickets, real-ish deps
+  model/dummy.ts    Deterministic fake galaxy: 5 epics, ~200 tickets, real-ish deps,
+                    and one epic per due-date state (far off, soon, overdue, none)
   model/derive.ts   Rolls leaf statuses up the tree (parents summarise children)
   model/source.ts   The single seam between UI and data — swap in Jira here
   engine/layout.ts  Ticket tree → star positions: a radial tidy tree, so subtrees
@@ -124,17 +167,22 @@ Sketch of what the proxy does:
    round trip and covers L3 for free.
 3. Map each issue: `fields.status.statusCategory.key` → `done` / `in_progress` /
    `todo`; `fields.issuelinks` where `type.inward === "is blocked by"` →
-   `blockedBy[]`; `fields.parent.key` → `parent`.
+   `blockedBy[]`; `fields.parent.key` → `parent`; `fields.duedate` → `dueDate`,
+   which is already a plain `YYYY-MM-DD` and maps straight across. Only the
+   epic's due date is shown on the map, but any issue may carry one.
 4. Hand the result to `deriveGalaxy()` — parent statuses are computed, never read
    from Jira, so a Jira epic left open by mistake cannot dim a finished map (and
    vice versa).
 
 Fields worth requesting explicitly to keep the payload small:
-`key,summary,description,status,assignee,parent,issuelinks,labels,updated,customfield_10016` (story points).
+`key,summary,description,status,assignee,parent,issuelinks,labels,updated,duedate,customfield_10016`
+(the last one is story points).
 
 Open questions to settle before that work starts:
 
 - Label vs. `parent` traversal for finding a project's tickets — the label approach
   is one query and depth-agnostic, but relies on people applying it.
 - Which Jira states count as "blocked" in your workflow (only leaves need it).
+- Whether 14 days is the right "due soon" window for the team's cadence
+  (`NEAR_DUE_DAYS` in `src/model/types.ts`) — it was a default, not a decision.
 - Refresh model: on load only, or poll every N minutes with a "last synced" stamp.

@@ -397,11 +397,30 @@ sibling. Parent statuses are **not** set here (see §4.3).
    `customfield_10016` (verify on your instance).
 5. Pass the result through `deriveGalaxy()` — never trust parent statuses.
 
-**Deployment — Docker (planned, not built).** The intent is to run this in a
-container so the URL can be bookmarked and checked over time. Two things it must
-get right or the bookmark dies anyway: a restart policy
-(`restart: unless-stopped`), and Docker Desktop set to start at login on macOS.
-Serve the built `dist/` rather than the dev server.
+**Deployment — Docker (built).** `docker compose up -d` builds and serves on
+`:8080`; see the README's "Deploy it" section for the operator-facing detail.
+Files: `Dockerfile`, `docker-compose.yml`, `docker/nginx.conf`, `.dockerignore`.
+
+Notes for whoever touches it next:
+
+- Two-stage build: `node:24-alpine` compiles, `nginx:1-alpine` serves. The final
+  image is ~70 MB and carries no source or toolchain. `npm run build` runs
+  `tsc -b` first, so **a type error fails the image build** — that is deliberate.
+- **The target host runs Docker; local dev here runs Podman.** Keep it working on
+  both: image names are fully qualified (Podman prompts on short names, Docker
+  does not) and nothing engine-specific is used.
+- The health check is in `docker-compose.yml`, *not* the Dockerfile. Podman
+  builds OCI-format images and drops a Dockerfile `HEALTHCHECK` with only a
+  warning, so putting it there would mean it silently existed on AWS only.
+- `restart: unless-stopped` is load-bearing: it is what makes the bookmarked URL
+  survive a host reboot.
+- Cache policy is split in `nginx.conf`: fingerprinted `/assets/` are
+  `immutable` for a year, `index.html` is `no-cache`. Do not cache `index.html`
+  — a stale copy points at asset filenames that no longer exist and the page
+  comes up blank after a redeploy.
+- Verified on Podman 5.8.1: image builds, container reports `healthy`,
+  `index.html` `no-cache`, assets `immutable` + gzipped, unknown paths fall back
+  to `index.html`, missing assets 404.
 
 **Open questions for the team**
 
