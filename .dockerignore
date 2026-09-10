@@ -1,0 +1,23 @@
+# Keep the build context small and the layer cache stable.
+#
+# node_modules is the important one: the host's copy is built for macOS/arm and
+# would break inside the Alpine build stage. `npm ci` installs a clean tree.
+node_modules
+dist
+
+.git
+.gitignore
+.dockerignore
+Dockerfile
+docker-compose.yml
+docker-compose.override.yml
+
+# Docs and scratch output are not part of the build.
+*.md
+/*.png
+.playwright-mcp
+.claude
+
+.DS_Store
+.vscode
+.idea

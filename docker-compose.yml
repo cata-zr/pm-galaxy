@@ -1,0 +1,34 @@
+# `docker compose up -d` is all this needs — it builds the image on first run.
+# Deliberately plain Compose spec, no engine-specific features: this is run with
+# podman locally and docker on the AWS host.
+#
+# There is no `version:` key on purpose; it has been obsolete since Compose v2
+# and current versions warn about it.
+
+services:
+  constellation:
+    build:
+      context: .
+    image: project-constellation:latest
+    container_name: constellation
+
+    # The whole point of running this in a container is a URL that keeps
+    # working. Without a restart policy the service does not come back after a
+    # host reboot and the bookmark quietly dies.
+    restart: unless-stopped
+
+    ports:
+      # Host port is configurable so this does not fight whatever else is on
+      # :80. Put CONSTELLATION_PORT=80 in a .env file beside this one to serve
+      # the host directly.
+      - "${CONSTELLATION_PORT:-8080}:80"
+
+    # Defined here rather than in the Dockerfile: Podman builds OCI-format
+    # images and ignores a Dockerfile HEALTHCHECK, so it would only have taken
+    # effect under Docker. wget is busybox's, already in the Alpine base.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/healthz"]
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3

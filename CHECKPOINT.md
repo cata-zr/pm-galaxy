@@ -1,12 +1,18 @@
 # Checkpoint — Constellation
 
-Updated 2026-09-03 (second checkpoint). The app is complete and working on dummy
-data. Since the first checkpoint it also carries **epic due dates**, a filterable
-and searchable galaxy map, and simplified top-level navigation. The Jira
-connection is still deliberately **not** started.
+Updated 2026-09-10 (third checkpoint). The app is complete and working on dummy
+data, and now **ships as a container** (`docker compose up -d`). Since the first
+checkpoint it also gained **epic due dates**, a filterable and searchable galaxy
+map, simplified top-level navigation, and a retuned star palette. The Jira
+connection is still deliberately **not** started — that remains the next phase.
 
 Read this file plus `README.md` (user-facing) and you should be able to pick the
-work up cold. §9 lists exactly what changed since the first checkpoint.
+work up cold. §9 lists exactly what changed and §10 is the state of play.
+
+> ⚠️ **Two things to check before trusting anything below.** The container files
+> are **untracked in git** (§10), so a fresh clone cannot deploy. And the dummy
+> due dates drift against the real clock (§5) — one of the four demo states
+> expires around **2026-09-12**.
 
 ---
 
@@ -98,10 +104,12 @@ cd project-constellation
 npm install
 npm run dev          # http://localhost:5173
 npm run build        # static SPA into dist/ ; tsc -b runs first
+
+docker compose up -d # or `podman compose` — builds and serves on :8080 (§7)
 ```
 
 Stack: **Vite 8 + React 19 + TypeScript**, canvas 2D rendering, **no graph or
-animation libraries**.
+animation libraries**. Deployed as a static bundle behind nginx in a container.
 
 Route lives in the URL hash: `#/tax-engine`. Empty hash = galaxy map.
 
@@ -344,11 +352,23 @@ the in-flight subset, **173 stars, 55 lit, 33 blocking, 1 overdue, 1 shipped**.
 If those numbers change without you touching `dummy.ts`, something in the seeding
 or the roll-up drifted.
 
-⚠️ **The due dates decay.** They are fixed, but `dueOf` compares against real
-`now`, so as real time passes `tax-engine` will slide from "soon" into "overdue"
-and `unified-checkout` into "soon". That is correct behaviour for Jira and wrong
-only for the fixture — if the demo stops showing one of each state, re-anchor
-`BASE` and the `dueInDays` values rather than "fixing" `dueOf`.
+⚠️ **The due dates decay, and the clock is already running.** The offsets are
+fixed but `dueOf` compares against real `now`, which is correct for Jira and
+wrong for a fixture. As of 2026-09-10 the fixture reads:
+
+| id | resolves to | days out | state |
+| --- | --- | --- | --- |
+| `unified-checkout` | 2026-10-20 | +40 | clear |
+| `tax-engine` | 2026-09-12 | **+2** | soon |
+| `merchant-onboarding` | 2026-08-28 | −13 | overdue |
+| `vault-rotation` | 2026-08-14 | −27 | met |
+
+**`tax-engine` tips into "overdue" on 2026-09-12**, and nothing else is inside
+the 14-day window (`unified-checkout` is 40 days out), so from that date the
+"Due soon" chip shows 0 and disables itself. The demo will look like the feature
+is broken when it is only out of date. Fix by re-anchoring `BASE` to today and
+keeping the offsets — do **not** "fix" `dueOf` to compare against `fetchedAt`,
+which would be wrong the moment real Jira data arrives.
 
 Rules the generator respects: a ticket is never `done` while a blocker is open;
 L1s occasionally depend on an earlier L1; L2s usually queue behind the previous
@@ -471,7 +491,14 @@ Notes for whoever touches it next:
 
 ## 9. What changed since the first checkpoint
 
-All of it is UI + model; the renderer, layout, camera and RNG were not touched.
+Layout, camera and RNG were never touched. The renderer changed only in how a
+star is coloured and haloed (`pulseTo` / `glowSize`); its frame order, geometry
+and label planning are untouched.
+
+**Deployment — new in the third checkpoint**
+- `Dockerfile` (two-stage: `node:24-alpine` builds, `nginx:1-alpine` serves),
+  `docker-compose.yml`, `docker/nginx.conf`, `.dockerignore`. Details and the
+  Podman/Docker gotchas are in §7.
 
 **Due dates**
 - `Ticket.dueDate?` added; `DueState`, `DueInfo`, `NEAR_DUE_DAYS`, `dueOf()` and
@@ -525,6 +552,34 @@ All of it is UI + model; the renderer, layout, camera and RNG were not touched.
 
 **Verification status:** the galaxy map, the due-date states and the Overdue
 filter were confirmed by screenshot; the blue progress bar and green "delivered"
-were confirmed by the user. The palette values above were tuned over two rounds
+were confirmed by the user. The palette values above were tuned over four rounds
 of live feedback from the user rather than by screenshot — "bright enough" and
-"fast enough to notice" are calls only a human watching the map can make.
+"fast enough to notice" are calls only a human watching the map can make. The
+container was verified by building and running it (§7).
+
+---
+
+## 10. State of play — read before deploying
+
+**The container files are untracked in git.** `Dockerfile`,
+`docker-compose.yml`, `docker/nginx.conf` and `.dockerignore` show as `??` in
+`git status`. Commit `54e75ac` ("added container") contains only `CHECKPOINT.md`,
+`README.md` and the deletion of a stray `galaxy.png` — the container itself was
+never staged. So a fresh clone on the AWS host gets a README instructing you to
+run `docker compose up -d` and no compose file to run. **Stage those four paths
+before deploying** (note `docker/` is a directory, easy to miss).
+
+Everything else is committed: all `src/` work sits in `db25bb6`.
+
+**Not yet done, in the order it probably matters:**
+
+1. Stage and commit the container files (above).
+2. Re-anchor the dummy due dates, or the "due soon" demo state expires
+   2026-09-12 (§5).
+3. The Jira adapter (§7) — the actual next phase of work.
+
+**Unverified claims worth a moment's scepticism.** The README says the render
+loop holds "170+ animated stars at 60fps". That number predates this session and
+has not been re-measured since the `lit` halo grew to 3.99r, which is more
+overdraw per done star than when it was written. `vault-rotation` (30 done stars,
+all haloed, plus the ignition wash) is the worst case and the place to check.
