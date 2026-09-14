@@ -565,6 +565,15 @@ button {
   border: 1px solid rgba(178, 196, 238, 0.8);
 }
 
+/* The belt is a marker, not a star colour, so the swatch is an unlit body with
+   a dashed orbit around it. Tracks BELT in engine/theme.ts. */
+.legend-star-blocked {
+  background: radial-gradient(circle at 32% 30%, #6c789c, #2c3348);
+  border: 1px solid rgba(178, 196, 238, 0.55);
+  outline: 1px dashed rgba(194, 205, 232, 0.7);
+  outline-offset: 2px;
+}
+
 /* Swatch colours track STAR_PALETTE in engine/theme.ts — keep them in step. */
 .legend-star-in_progress {
   background: #cdefff;

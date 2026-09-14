@@ -7,6 +7,7 @@ import { useState } from 'react';
 const STARS: { swatch: string; label: string; note: string }[] = [
   { swatch: 'sun', label: 'Epic', note: 'Ignites when every star is lit' },
   { swatch: 'unlit', label: 'Not started', note: 'No light' },
+  { swatch: 'blocked', label: 'Blocked', note: 'Ring of orbiting debris' },
   { swatch: 'in_progress', label: 'In progress', note: 'Blue flicker' },
   { swatch: 'blocking', label: 'Blocking others', note: 'Red; pulses to amber while it moves' },
   { swatch: 'done', label: 'Done', note: 'Full starlight' },

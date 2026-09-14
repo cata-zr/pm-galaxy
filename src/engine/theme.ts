@@ -131,6 +131,64 @@ export const LINK_STYLE = {
   dependsClear: 'rgba(74, 222, 150, 0.8)',
 };
 
+/**
+ * A blocked leaf gets a slowly turning belt of debris instead of a colour.
+ *
+ * A ticket's own "I am stuck" state had nowhere to go: `visualOf` only reads
+ * done / blocks / in_progress, so a blocked leaf that nothing depends on
+ * rendered as plain `unlit` — indistinguishable from work nobody had touched.
+ * The belt is a *third* channel, orthogonal to the two the stars already use
+ * (brightness ranks attention, halo spread carries state), so it adds the
+ * signal without touching STAR_PALETTE at all.
+ *
+ * Deliberately **grey, not red.** Red is reserved for "other work is waiting on
+ * this one" (principle 1), and a red belt around a red `blocking` star — the
+ * most important ticket type on the map — would merge into one red blob and
+ * cost both readings. Grey debris leaves the hue channel alone and still reads
+ * against the near-black background. Real asteroid belts are grey anyway.
+ */
+export const BELT = {
+  /**
+   * Belt radius as a multiple of the star radius. It has to clear the star's
+   * halo or it gets washed out: `blocking`'s reaches ~3.2r at full brightness,
+   * `unlit`'s only 2.4r, so one constant sits outside both.
+   */
+  radius: 3.4,
+  /**
+   * Vertical squash. A true circle reads as a loading spinner — "the app is
+   * fetching" — which is the wrong message entirely. An inclined ellipse reads
+   * as an orbital plane.
+   */
+  squash: 0.35,
+  /** Chunks of debris around the belt. A constant *count* at any zoom, so the
+   *  dashes scale with the star instead of with the screen. Kept fine-grained:
+   *  at 14 the chunks grew large enough when zoomed in to read as a dashed
+   *  selection outline rather than as rubble. */
+  chunks: 24,
+  /** Fraction of each chunk's slot that is solid rock rather than gap. */
+  duty: 0.38,
+  /** Seconds per revolution. Slow on purpose, for the same reason as `squash`:
+   *  slow reads orbital, fast reads spinner. It is also a rhythm nothing else
+   *  on the map uses — the star pulse is ~2.1s and the dependency dashes flow
+   *  faster than that. */
+  period: 12,
+  /** Cool grey-white. Kept dimmer than the unlit star's rim (0.75 alpha) so the
+   *  belt never outshines the body it orbits. */
+  colour: '#c2cde8',
+  alpha: 0.5,
+  /** Stroke width is `r * 0.16`, capped here. Without the cap a zoomed-in belt
+   *  turns into a heavy dashed ring that competes with the star. */
+  maxLineWidth: 2.4,
+  /**
+   * Below this on-screen belt radius the dashes degenerate into shimmer, so the
+   * belt is skipped entirely. Gating on *screen* radius rather than camera
+   * scale means it adapts per star level — and it keeps belts out of the galaxy
+   * map's miniatures for free, which would otherwise be five cards of
+   * sub-pixel noise.
+   */
+  minScreenRadius: 9,
+};
+
 export const UI = {
   bg: '#010207',
   nebulaA: 'rgba(48, 38, 104, 0.16)',

@@ -7,7 +7,7 @@ import { hash, mulberry32 } from '../lib/rng';
 import type { Camera } from './camera';
 import { worldToScreen } from './camera';
 import type { Layout, LinkEdge, StarNode } from './layout';
-import { LINK_STYLE, STAR_PALETTE, UI, mixHex, type StarPalette, type Visual } from './theme';
+import { BELT, LINK_STYLE, STAR_PALETTE, UI, mixHex, type StarPalette, type Visual } from './theme';
 
 /**
  * A star's look, from its own progress plus whether anything waits on it.
@@ -588,6 +588,78 @@ function drawStarBody(
   ctx.restore();
 }
 
+// ---------------------------------------------------------------------------
+// Blocked belts
+// ---------------------------------------------------------------------------
+
+/**
+ * One blocked leaf's belt: a single dashed ellipse whose dash offset advances,
+ * so the dashes *are* the debris. Deliberately not a dozen particle arcs —
+ * this is one path per blocked star, which keeps it off the 60fps budget, and
+ * no `shadowBlur`, which is the expensive call in this file.
+ */
+function drawBelt(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  r: number,
+  node: StarNode,
+  st: RenderState,
+  emphasis: number,
+) {
+  const rx = r * BELT.radius;
+  const ry = rx * BELT.squash;
+
+  // Ramanujan's approximation. It only paces the dashes, so close enough.
+  const perimeter = Math.PI * (3 * (rx + ry) - Math.sqrt((3 * rx + ry) * (rx + 3 * ry)));
+  const slot = perimeter / BELT.chunks;
+
+  ctx.save();
+  ctx.globalAlpha = BELT.alpha * emphasis;
+  ctx.strokeStyle = BELT.colour;
+  ctx.lineWidth = Math.min(Math.max(0.8, r * 0.16), BELT.maxLineWidth);
+  ctx.setLineDash([slot * BELT.duty, slot * (1 - BELT.duty)]);
+  // The offset advances one whole perimeter per `period`, so the debris laps
+  // the star once per period. Dashes are spaced by *arc length*, so on a
+  // squashed ellipse they visibly quicken along the long edges and linger at
+  // the ends — which is exactly what sells it as an orbit instead of a spin.
+  ctx.lineDashOffset = -(st.time / BELT.period) * perimeter;
+  ctx.beginPath();
+  // Per-star tilt from the seeded phase: belts are not all parallel, and a
+  // star keeps the same tilt on every reload (principle 8).
+  ctx.ellipse(x, y, rx, ry, node.phase, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/**
+ * Belts are drawn between the links and the stars — debris orbits *around* the
+ * body, and the star's core has to stay the brightest thing on screen
+ * (principle 2).
+ *
+ * **Leaves only.** A parent's status is a roll-up (`model/derive.ts`), so
+ * belting parents would ring a whole subtree because one sub-task is stuck.
+ */
+function drawBelts(ctx: CanvasRenderingContext2D, w: number, h: number, layout: Layout, st: RenderState) {
+  for (const node of layout.nodes) {
+    if (node.level === 0 || node.children.length > 0) continue;
+    if (node.ticket.status !== 'blocked') continue;
+
+    // Gate on the *unfloored* radius: the 3px floor the stars use would keep
+    // every belt above the threshold no matter how far you zoom out.
+    const raw = node.r * st.camera.scale;
+    if (raw * BELT.radius < BELT.minScreenRadius) continue;
+    const r = Math.max(raw, 3);
+
+    const p = worldToScreen(st.camera, w, h, node.x, node.y);
+    const margin = r * BELT.radius + 40;
+    if (p.x < -margin || p.y < -margin || p.x > w + margin || p.y > h + margin) continue;
+
+    const dimmed = st.focus && !st.focus.has(node.key);
+    drawBelt(ctx, p.x, p.y, r, node, st, dimmed ? 0.22 : 1);
+  }
+}
+
 function drawSelectionRing(
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -782,6 +854,7 @@ export function renderConstellation(
   drawBackground(ctx, w, h, st);
   drawSunlight(ctx, w, h, st, layout.extent * st.camera.scale);
   drawLinks(ctx, w, h, layout, st);
+  drawBelts(ctx, w, h, layout, st);
 
   for (const node of layout.nodes) {
     const p = worldToScreen(st.camera, w, h, node.x, node.y);
