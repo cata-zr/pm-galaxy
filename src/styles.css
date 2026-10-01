@@ -52,8 +52,8 @@ button {
 .topbar {
   display: flex;
   align-items: center;
-  gap: 18px;
-  padding: 10px 18px;
+  gap: clamp(8px, 2vw, 18px);
+  padding: 10px clamp(10px, 2.5vw, 18px);
   border-bottom: 1px solid var(--panel-border);
   background: rgba(4, 6, 14, 0.92);
   backdrop-filter: blur(12px);
@@ -62,6 +62,7 @@ button {
 
 .brand {
   display: flex;
+  flex: none;
   align-items: center;
   gap: 9px;
   font-weight: 600;
@@ -77,6 +78,8 @@ button {
 }
 
 .backlink {
+  flex: none;
+  white-space: nowrap;
   padding: 6px 12px;
   border-radius: 999px;
   font-size: 13px;
@@ -91,8 +94,13 @@ button {
   border-color: rgba(255, 194, 71, 0.4);
 }
 
+/* Shrinks and truncates first, so the buttons either side never leave the screen. */
 .source-label {
+  flex: 0 1 auto;
+  min-width: 0;
   margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 12px;
   color: var(--text-dim);
   white-space: nowrap;
@@ -185,7 +193,7 @@ button {
   gap: 12px;
   align-items: flex-start;
   flex: none;
-  margin: 16px 32px 0;
+  margin: 16px clamp(16px, 4vw, 32px) 0;
   padding: 12px 14px;
   font-size: 12.5px;
   line-height: 1.6;
@@ -219,7 +227,7 @@ button {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 28px 32px 48px;
+  padding: clamp(18px, 4vw, 28px) clamp(16px, 4vw, 32px) 48px;
   background:
     radial-gradient(1000px 600px at 15% -10%, rgba(58, 46, 122, 0.14), transparent 70%),
     radial-gradient(900px 700px at 95% 20%, rgba(14, 66, 110, 0.12), transparent 70%),
@@ -266,6 +274,7 @@ button {
   flex-direction: column;
   align-items: flex-end;
   gap: 10px;
+  max-width: 100%;
 }
 
 .filters {
@@ -343,11 +352,14 @@ button {
 
 .galaxy-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  /* min() so a card never overflows a screen narrower than one card. */
+  grid-template-columns: repeat(auto-fill, minmax(min(330px, 100%), 1fr));
   gap: 20px;
 }
 
 .system-card {
+  /* Grid items default to min-width: auto; let a card shrink with its column. */
+  min-width: 0;
   text-align: left;
   padding: 0;
   border: 1px solid var(--panel-border);
@@ -446,6 +458,7 @@ button {
   align-items: baseline;
   justify-content: space-between;
   gap: 10px;
+  min-width: 0;
 }
 
 .system-title h2 {
@@ -489,7 +502,8 @@ button {
 
 .system-stats {
   display: flex;
-  gap: 14px;
+  flex-wrap: wrap;
+  gap: 4px 14px;
   font-size: 12px;
   color: var(--text-dim);
 }
@@ -552,18 +566,20 @@ button {
 }
 
 .scene-top {
-  top: 16px;
-  left: 18px;
-  right: 18px;
+  top: clamp(10px, 2vw, 16px);
+  left: clamp(10px, 2vw, 18px);
+  right: clamp(10px, 2vw, 18px);
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 18px;
+  gap: 10px 18px;
 }
 
 .scene-stats {
   pointer-events: auto;
-  min-width: 280px;
+  flex: 1 1 260px;
+  min-width: 0;
   max-width: 380px;
   padding: 12px 16px;
   border: 1px solid var(--panel-border);
@@ -591,8 +607,9 @@ button {
 
 .scene-counts {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 14px;
+  gap: 6px 14px;
   font-size: 12px;
   color: var(--text-dim);
 }
@@ -618,8 +635,16 @@ button {
 .scene-tools {
   pointer-events: auto;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
+  margin-left: auto;
+  max-width: 100%;
+}
+
+.scene-tools button {
+  white-space: nowrap;
 }
 
 .scene-tools button {
@@ -639,6 +664,8 @@ button {
 
 .search {
   width: 210px;
+  min-width: 0;
+  max-width: 100%;
   padding: 7px 11px;
   font-size: 12px;
   color: var(--text);
@@ -662,9 +689,11 @@ button {
 
 .legend {
   position: absolute;
-  left: 18px;
-  bottom: 18px;
-  width: 312px;
+  left: clamp(10px, 2vw, 18px);
+  bottom: clamp(10px, 2vw, 18px);
+  width: min(312px, calc(100% - 20px));
+  max-height: 50vh;
+  overflow-y: auto;
   padding: 10px 12px;
   border: 1px solid var(--panel-border);
   border-radius: 12px;
@@ -694,7 +723,7 @@ button {
 
 .legend-row {
   display: grid;
-  grid-template-columns: 16px 118px 1fr;
+  grid-template-columns: 16px minmax(0, 118px) 1fr;
   align-items: center;
   gap: 8px;
 }
@@ -790,7 +819,7 @@ button {
   top: 16px;
   right: 16px;
   bottom: 16px;
-  width: 370px;
+  width: min(370px, calc(100% - 32px));
   padding: 16px 18px 12px;
   overflow-y: auto;
   border: 1px solid var(--panel-border);
@@ -1054,8 +1083,42 @@ button {
     top: auto;
     height: 55%;
   }
+}
 
-  .legend {
+@media (max-width: 700px) {
+  .synced {
+    display: none;
+  }
+
+  /* The header stacks: controls go full width under the title. */
+  .galaxy-controls {
+    align-items: stretch;
+    width: 100%;
+  }
+
+  .galaxy-controls .search {
+    width: 100%;
+  }
+
+  .filters {
+    justify-content: flex-start;
+  }
+
+  .scene-stats {
+    max-width: none;
+  }
+
+  .scene-tools {
+    flex: 1 1 100%;
+  }
+
+  .scene-tools .search {
+    flex: 1 1 140px;
+  }
+}
+
+@media (max-width: 480px) {
+  .brand-name {
     display: none;
   }
 }

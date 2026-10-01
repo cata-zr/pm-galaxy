@@ -140,7 +140,7 @@ export default function App() {
       <header className="topbar">
         <button className="brand" onClick={() => navigate(null)}>
           <span className="brand-dot" />
-          Constellation
+          <span className="brand-name">Constellation</span>
         </button>
 
         {constellation && (

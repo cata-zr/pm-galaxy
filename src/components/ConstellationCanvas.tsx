@@ -80,8 +80,10 @@ export function ConstellationCanvas({
       const h = parent.clientHeight;
       canvas.width = Math.max(1, Math.floor(w * dpr));
       canvas.height = Math.max(1, Math.floor(h * dpr));
-      canvas.style.width = `${w}px`;
-      canvas.style.height = `${h}px`;
+      // Fill the parent rather than pinning a pixel size: a fixed size becomes
+      // the parent's minimum, so it could never shrink when the window does.
+      canvas.style.width = '100%';
+      canvas.style.height = '100%';
       const ctx = canvas.getContext('2d');
       ctx?.setTransform(dpr, 0, 0, dpr, 0, 0);
       const prev = sizeRef.current;

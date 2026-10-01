@@ -20,8 +20,11 @@ const PATHS: { swatch: string; label: string; note: string }[] = [
   { swatch: 'line-clear', label: 'Path clear', note: 'Blocker is done' },
 ];
 
+/** Open by default only where it fits alongside the constellation. */
+const roomForLegend = () => window.matchMedia('(min-width: 1100px) and (min-height: 760px)').matches;
+
 export function Legend() {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(roomForLegend);
   return (
     <div className={`legend ${open ? '' : 'legend-closed'}`}>
       <button className="legend-toggle" onClick={() => setOpen((o) => !o)}>

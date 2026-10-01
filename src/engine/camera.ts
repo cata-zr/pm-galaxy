@@ -22,8 +22,16 @@ export function clampScale(scale: number) {
   return Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale));
 }
 
-/** Camera that frames the whole constellation with a margin. */
-export function fitCamera(extent: number, w: number, h: number, margin = 90): Camera {
+/**
+ * Camera that frames the whole constellation with a margin. The default margin
+ * scales with the viewport, so a small screen is not mostly border.
+ */
+export function fitCamera(
+  extent: number,
+  w: number,
+  h: number,
+  margin = Math.min(90, Math.max(24, Math.min(w, h) * 0.08)),
+): Camera {
   const scale = clampScale(Math.min((w - margin * 2) / (extent * 2), (h - margin * 2) / (extent * 2)));
   return { x: 0, y: 0, scale };
 }
