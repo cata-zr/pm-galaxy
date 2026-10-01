@@ -195,6 +195,6 @@ export const UI = {
   nebulaB: 'rgba(12, 54, 92, 0.14)',
   nebulaC: 'rgba(96, 26, 78, 0.1)',
   label: 'rgba(226, 234, 255, 0.92)',
-  labelDim: 'rgba(190, 202, 235, 0.45)',
+  labelDim: 'rgba(200, 212, 242, 0.72)',
   accent: '#ffc247',
 };

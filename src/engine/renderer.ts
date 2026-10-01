@@ -6,7 +6,7 @@
 import { hash, mulberry32 } from '../lib/rng';
 import type { Camera } from './camera';
 import { worldToScreen } from './camera';
-import type { Layout, LinkEdge, StarNode } from './layout';
+import type { Layout, LinkEdge, StarNode, SunShape } from './layout';
 import { BELT, LINK_STYLE, STAR_PALETTE, UI, mixHex, type StarPalette, type Visual } from './theme';
 
 /**
@@ -108,6 +108,105 @@ function drawBackground(ctx: CanvasRenderingContext2D, w: number, h: number, st:
     ctx.arc(x, y, s.r, 0, Math.PI * 2);
     ctx.fill();
   }
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// Silhouette glow (flat constellations)
+// ---------------------------------------------------------------------------
+
+/** How far, in world units, the glow fades out past the silhouette's edge. */
+const SHAPE_GLOW_FADE = 150;
+const SHAPE_GLOW_LAYERS = 18;
+const SHAPE_GLOW_LAYER_ALPHA = 0.05;
+const SHAPE_GLOW_COLOUR = '150, 165, 255';
+const SHAPE_GLOW_ALPHA = 0.1;
+
+interface GlowSprite {
+  canvas: HTMLCanvasElement;
+  /** World-space top-left corner and world units per sprite pixel. */
+  x: number;
+  y: number;
+  unit: number;
+}
+
+const glowCache = new WeakMap<Layout, GlowSprite>();
+
+/**
+ * Painted once per layout into an offscreen canvas, then blitted every frame:
+ * a flat interior plus stacked round strokes that thin out away from the edge,
+ * so the glow fades outward without a per-frame blur.
+ */
+function glowSprite(layout: Layout): GlowSprite | null {
+  const outline = layout.outline;
+  if (!outline) return null;
+  const cached = glowCache.get(layout);
+  if (cached) return cached;
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of outline.points) {
+    minX = Math.min(minX, p.x);
+    minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x);
+    maxY = Math.max(maxY, p.y);
+  }
+  minX -= SHAPE_GLOW_FADE;
+  minY -= SHAPE_GLOW_FADE;
+  maxX += SHAPE_GLOW_FADE;
+  maxY += SHAPE_GLOW_FADE;
+  // It is a soft glow, so half a pixel per world unit is plenty.
+  const unit = Math.max(2, Math.max(maxX - minX, maxY - minY) / 1024);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.ceil((maxX - minX) / unit);
+  canvas.height = Math.ceil((maxY - minY) / unit);
+  const g = canvas.getContext('2d');
+  if (!g) return null;
+
+  g.scale(1 / unit, 1 / unit);
+  g.translate(-minX, -minY);
+  g.beginPath();
+  outline.points.forEach((p, i) => (i ? g.lineTo(p.x, p.y) : g.moveTo(p.x, p.y)));
+  if (outline.closed) g.closePath();
+
+  g.lineJoin = 'round';
+  g.lineCap = 'round';
+  g.strokeStyle = `rgba(${SHAPE_GLOW_COLOUR}, ${SHAPE_GLOW_LAYER_ALPHA})`;
+  for (let k = SHAPE_GLOW_LAYERS; k >= 1; k--) {
+    g.lineWidth = (2 * SHAPE_GLOW_FADE * k) / SHAPE_GLOW_LAYERS;
+    g.stroke();
+  }
+  if (outline.closed) {
+    // Replace the inside with the level the strokes reach on the line itself,
+    // so the edge has no bright rim: the glow is flat inside and fades outside.
+    const peak = 1 - Math.pow(1 - SHAPE_GLOW_LAYER_ALPHA, SHAPE_GLOW_LAYERS);
+    g.save();
+    g.clip();
+    g.clearRect(minX, minY, maxX - minX, maxY - minY);
+    g.fillStyle = `rgba(${SHAPE_GLOW_COLOUR}, ${peak})`;
+    g.fill();
+    g.restore();
+  }
+
+  const sprite = { canvas, x: minX, y: minY, unit };
+  glowCache.set(layout, sprite);
+  return sprite;
+}
+
+function drawShapeGlow(ctx: CanvasRenderingContext2D, w: number, h: number, layout: Layout, st: RenderState) {
+  // A finished constellation has its flare instead; the glow would muddy it.
+  if (st.complete) return;
+  const sprite = glowSprite(layout);
+  if (!sprite) return;
+  const cam = st.camera;
+  const p = worldToScreen(cam, w, h, sprite.x, sprite.y);
+  const k = sprite.unit * cam.scale;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = SHAPE_GLOW_ALPHA;
+  ctx.drawImage(sprite.canvas, p.x, p.y, sprite.canvas.width * k, sprite.canvas.height * k);
   ctx.restore();
 }
 
@@ -354,20 +453,31 @@ function drawSpikes(
   ctx.restore();
 }
 
-/** Wobbling flame outline — a sum of sines, so the limb never sits still. */
-function flamePath(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, t: number) {
+/**
+ * Wobbling flame outline. The lobes come from the galaxy's own `SunShape`, so
+ * every sun has its own lumpy silhouette; they drift with time, and a fine
+ * fixed ripple on top keeps the limb reading as flame.
+ */
+function flamePath(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  r: number,
+  t: number,
+  shape: SunShape,
+) {
   ctx.beginPath();
   const steps = 72;
+  const cos = Math.cos(shape.tilt);
+  const sin = Math.sin(shape.tilt);
   for (let i = 0; i <= steps; i++) {
     const a = (i / steps) * Math.PI * 2;
-    const wobble =
-      1 +
-      0.055 * Math.sin(a * 3 + t * 0.9) +
-      0.038 * Math.sin(a * 5 - t * 1.35) +
-      0.022 * Math.sin(a * 9 + t * 0.55);
-    const rr = r * wobble;
-    const px = x + Math.cos(a) * rr;
-    const py = y + Math.sin(a) * rr;
+    let wobble = 1 + 0.02 * Math.sin(a * 9 + t * 0.55);
+    for (const hm of shape.harmonics) wobble += hm.amp * Math.sin(a * hm.k + hm.phase + t * hm.speed);
+    const ox = Math.cos(a) * r * wobble * shape.squash;
+    const oy = (Math.sin(a) * r * wobble) / shape.squash;
+    const px = x + ox * cos - oy * sin;
+    const py = y + ox * sin + oy * cos;
     if (i === 0) ctx.moveTo(px, py);
     else ctx.lineTo(px, py);
   }
@@ -385,61 +495,124 @@ function ignition(st: RenderState): number {
 }
 
 /**
- * The payoff for finishing an epic: the sun floods the whole constellation with
- * light, throws rays past its furthest star, and sends slow rings outward.
+ * Candy hues (degrees) the stars of a finished constellation cycle through:
+ * strawberry, orange, lemon, lime, cyan, grape, hot pink.
+ */
+const CANDY_HUES = [345, 24, 54, 115, 190, 268, 315];
+
+/** Fully saturated HSL → RGB; `l` is 0..1. */
+function hueToRgb(h: number, l: number): [number, number, number] {
+  const k = (n: number) => (n + h / 30) % 12;
+  const a = Math.min(l, 1 - l);
+  const f = (n: number) => Math.round(255 * (l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1))));
+  return [f(0), f(8), f(4)];
+}
+
+/**
+ * A star's current candy colour: a smooth cross-fade through a seeded random
+ * sequence of `CANDY_HUES`, at the star's own pace and phase. It blends the
+ * hue, not RGB, so the in-between colours stay as vivid as the stops instead
+ * of going muddy (orange → green through olive).
+ */
+function candyColour(node: StarNode, time: number): [number, number, number] {
+  const rate = 0.07 + ((hash(`${node.key}:candy-rate`) % 1000) / 1000) * 0.1;
+  const pos = time * rate + node.phase;
+  const step = Math.floor(pos);
+  const at = (k: number) => CANDY_HUES[hash(`${node.key}:${k}`) % CANDY_HUES.length];
+  const a = at(step);
+  // Shortest way round the colour wheel.
+  const delta = ((at(step + 1) - a + 540) % 360) - 180;
+  const f = pos - step;
+  const e = f * f * (3 - 2 * f);
+  return hueToRgb((a + delta * e + 360) % 360, 0.55);
+}
+
+/** Seconds between drum strikes, and how long a ring takes to reach the edge. */
+const PULSE_INTERVAL = 2.8;
+const PULSE_DURATION = 1;
+
+/**
+ * One glowing ring: soft bands that are brightest on the ring's line and fade
+ * to nothing on both sides, a wide warm halo under a narrower white-hot one.
+ * Gradients rather than stacked strokes, so a thick ring glows instead of
+ * reading as a flat stripe.
+ */
+function drawPulseRing(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  radius: number,
+  width: number,
+  glowAlpha: number,
+  coreAlpha: number,
+) {
+  const bands: [number, number, string][] = [
+    [width * 2.2, 0.4 * glowAlpha, '255, 190, 110'],
+    [width * 0.85, 0.95 * coreAlpha, '255, 248, 228'],
+  ];
+  for (const [half, a, rgb] of bands) {
+    if (a < 0.005) continue;
+    const inner = Math.max(0, radius - half);
+    const outer = radius + half;
+    const g = ctx.createRadialGradient(x, y, inner, x, y, outer);
+    const mid = (radius - inner) / (outer - inner);
+    g.addColorStop(0, `rgba(${rgb}, 0)`);
+    g.addColorStop(mid, `rgba(${rgb}, ${a})`);
+    g.addColorStop(1, `rgba(${rgb}, 0)`);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(x, y, outer, 0, Math.PI * 2);
+    ctx.arc(x, y, inner, 0, Math.PI * 2, true);
+    ctx.fill();
+  }
+}
+
+/**
+ * The payoff for finishing an epic: the sun floods the constellation with
+ * white light and beats like a slow drum, each strike sending a glowing
+ * shockwave racing out past the furthest star, thinning as it widens.
  */
 function drawSunlight(
   ctx: CanvasRenderingContext2D,
   w: number,
   h: number,
+  layout: Layout,
   st: RenderState,
-  extentPx: number,
 ) {
   const ign = ignition(st);
   if (ign <= 0.001) return;
-  const sun = worldToScreen(st.camera, w, h, 0, 0);
+  const cam = st.camera;
+  const sun = worldToScreen(cam, w, h, 0, 0);
+  const sunR = Math.max((layout.nodes[0]?.r ?? 46) * cam.scale, 8);
+  const extentPx = layout.extent * cam.scale;
   const t = st.time;
   const breathe = 0.94 + 0.06 * Math.sin(t * 0.55);
   const R = Math.max(extentPx * 1.3, 200) * breathe;
 
-  drawGlow(ctx, sun.x, sun.y, R, 'rgba(255, 186, 82, 1)', 0.15 * ign);
-  drawGlow(ctx, sun.x, sun.y, R * 0.55, 'rgba(255, 214, 148, 1)', 0.13 * ign);
+  drawGlow(ctx, sun.x, sun.y, R, 'rgba(255, 214, 170, 1)', 0.13 * ign);
+  drawGlow(ctx, sun.x, sun.y, R * 0.5, 'rgba(255, 244, 226, 1)', 0.08 * ign);
 
+  const reach = Math.max(extentPx * 1.9, sunR * 9);
+  // Starts as a thick band about the sun's own size, wasting away as it spreads.
+  const startWidth = Math.max(12, sunR * 1.4);
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
-  ctx.translate(sun.x, sun.y);
-
-  // A soft sunburst: many fine rays, not a lens-flare cross.
-  ctx.rotate(t * 0.035);
-  const rays = 30;
-  for (let i = 0; i < rays; i++) {
-    const a = (i / rays) * Math.PI * 2;
-    const len = R * (0.66 + 0.34 * Math.abs(Math.sin(t * 0.5 + i * 1.7)));
-    const g = ctx.createLinearGradient(0, 0, Math.cos(a) * len, Math.sin(a) * len);
-    g.addColorStop(0, `rgba(255, 226, 160, ${0.055 * ign})`);
-    g.addColorStop(0.25, `rgba(255, 214, 140, ${0.075 * ign})`);
-    g.addColorStop(1, 'rgba(255, 190, 90, 0)');
-    ctx.fillStyle = g;
-    const spread = 0.02 + 0.02 * Math.abs(Math.sin(t * 0.3 + i));
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(Math.cos(a - spread) * len, Math.sin(a - spread) * len);
-    ctx.lineTo(Math.cos(a + spread) * len, Math.sin(a + spread) * len);
-    ctx.closePath();
-    ctx.fill();
-  }
-  ctx.rotate(-t * 0.035);
-
-  // Light rings travelling out to the edge of the constellation.
-  for (let k = 0; k < 3; k++) {
-    const phase = ((t * 0.19 + k / 3) % 1);
-    const radius = phase * R;
-    ctx.globalAlpha = (1 - phase) * (1 - phase) * 0.3 * ign;
-    ctx.strokeStyle = 'rgba(255, 224, 160, 1)';
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.arc(0, 0, radius, 0, Math.PI * 2);
-    ctx.stroke();
+  // Seconds since the ignition began (see `ignition`); strikes start then.
+  const since = t - 0.4;
+  const newest = Math.floor(since / PULSE_INTERVAL);
+  const span = Math.ceil(PULSE_DURATION / PULSE_INTERVAL);
+  for (let k = newest; k >= Math.max(0, newest - span); k--) {
+    const age = since - k * PULSE_INTERVAL;
+    if (age < 0 || age > PULSE_DURATION) continue;
+    const p = age / PULSE_DURATION;
+    // A strike: very fast off the sun, decelerating as it spreads.
+    const e = 1 - Math.pow(1 - p, 3);
+    const radius = sunR + e * (reach - sunR);
+    const width = Math.max(1, startWidth * Math.pow(1 - p, 1.5));
+    // The white-hot core burns out well before its glow does.
+    const glow = ign * Math.pow(1 - p, 0.8);
+    const core = ign * Math.pow(1 - p, 2.6);
+    drawPulseRing(ctx, sun.x, sun.y, radius, width, glow, core);
   }
   ctx.restore();
 }
@@ -451,6 +624,7 @@ function drawSun(
   r: number,
   st: RenderState,
   emphasis: number,
+  shape: SunShape,
 ) {
   const ign = ignition(st);
   // Before ignition the sun is a banked fire: it warms as the epic fills in,
@@ -462,19 +636,24 @@ function drawSun(
   const coronaR = r * (1.9 + warm * 0.8 + ign * 2.6) * flicker;
   drawGlow(ctx, x, y, coronaR, `rgba(255, 122, 26, ${0.1 + warm * 0.1 + ign * 0.3})`, emphasis);
   drawGlow(ctx, x, y, r * (1.35 + ign * 0.9) * flicker, `rgba(255, 198, 104, ${0.12 + warm * 0.12 + ign * 0.45})`, emphasis);
+  if (ign > 0) {
+    // Ignited, the sun goes white-hot: the brightest thing in the sky.
+    drawGlow(ctx, x, y, r * 2.4 * flicker, 'rgba(255, 252, 240, 1)', 0.55 * ign * emphasis);
+    drawGlow(ctx, x, y, r * 1.35 * flicker, 'rgba(255, 255, 255, 1)', 0.6 * ign * emphasis);
+  }
 
   ctx.save();
   ctx.globalAlpha = emphasis;
 
   // Body: embers before ignition, white-hot after.
-  flamePath(ctx, x, y, r * flicker * (1 + ign * 0.06), t);
+  flamePath(ctx, x, y, r * flicker * (1 + ign * 0.06), t, shape);
   const mix = (dark: number[], hot: number[]) =>
     `rgb(${dark.map((c, i) => Math.round(c + (hot[i] - c) * ign)).join(',')})`;
   const body = ctx.createRadialGradient(x, y, r * 0.05, x, y, r * 1.06);
   body.addColorStop(0, mix([170, 92, 38], [255, 252, 236]));
-  body.addColorStop(0.32, mix([138, 62, 22], [255, 222, 132]));
-  body.addColorStop(0.66, mix([96, 36, 12], [250, 158, 46]));
-  body.addColorStop(1, mix([54, 18, 8], [188, 62, 14]));
+  body.addColorStop(0.32, mix([138, 62, 22], [255, 246, 214]));
+  body.addColorStop(0.66, mix([96, 36, 12], [255, 214, 132]));
+  body.addColorStop(1, mix([54, 18, 8], [246, 150, 60]));
   ctx.fillStyle = body;
   ctx.fill();
 
@@ -506,7 +685,8 @@ function drawSun(
     const cy = y + Math.sin(a * 1.21 + phase) * r * dist * 0.62;
     const rad = r * size * 0.75;
     const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, rad);
-    g.addColorStop(0, `rgba(150, 44, 8, ${0.22 * emphasis})`);
+    // Sunspots fade as it ignites; on a white-hot body they read as smudges.
+    g.addColorStop(0, `rgba(150, 44, 8, ${0.22 * (1 - ign * 0.85) * emphasis})`);
     g.addColorStop(1, 'rgba(150, 44, 8, 0)');
     ctx.fillStyle = g;
     ctx.fillRect(x - r * 1.3, y - r * 1.3, r * 2.6, r * 2.6);
@@ -517,7 +697,7 @@ function drawSun(
   ctx.save();
   ctx.globalAlpha = emphasis * (0.28 + warm * 0.2 + ign * 0.4);
   ctx.globalCompositeOperation = 'lighter';
-  flamePath(ctx, x, y, r * flicker * 1.02, t + 0.6);
+  flamePath(ctx, x, y, r * flicker * 1.02, t + 0.6, shape);
   ctx.strokeStyle = 'rgba(255, 190, 96, 0.75)';
   ctx.lineWidth = Math.max(1, r * 0.05);
   ctx.stroke();
@@ -542,6 +722,15 @@ function drawStarBody(
   const tint = p.pulseTo ? Math.pow(wave, p.pulseSkew ?? 1) : 0;
   const coreColour = p.pulseTo ? mixHex(p.core, p.pulseTo.core, tint) : p.core;
   const glowColour = p.pulseTo ? mixHex(p.glow, p.pulseTo.glow, tint) : p.glow;
+  // A finished constellation celebrates: every star burns in candy colours,
+  // cross-fading in from its normal look as the sun ignites.
+  const ign = ignition(st);
+  if (ign >= 1) {
+    drawCandyStar(ctx, x, y, r, node, st, b, emphasis);
+    return;
+  }
+  if (ign > 0) drawCandyStar(ctx, x, y, r, node, st, b, emphasis * ign);
+  emphasis *= 1 - ign;
 
   if (visual === 'unlit') {
     // Unlit: a cold body catching a little sunlight, plus a bright rim. It has to
@@ -584,6 +773,47 @@ function drawStarBody(
   ctx.fillStyle = core;
   ctx.beginPath();
   ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+/**
+ * A celebrating star drawn as a light source, not a coloured disc: a white-hot
+ * centre that only tints toward its rim, inside a strong additive glow in its
+ * colour. Saturated colour on the body itself reads as paint; saturated
+ * colour in the *light around* a white core reads as a burning star.
+ */
+function drawCandyStar(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  r: number,
+  node: StarNode,
+  st: RenderState,
+  b: number,
+  emphasis: number,
+) {
+  const [cr, cg, cb] = candyColour(node, st.time);
+  const colour = `rgb(${cr}, ${cg}, ${cb})`;
+  const tint = (k: number) =>
+    `rgb(${Math.round(cr + (255 - cr) * k)}, ${Math.round(cg + (255 - cg) * k)}, ${Math.round(cb + (255 - cb) * k)})`;
+  const flare = 0.85 + 0.15 * b;
+
+  drawGlow(ctx, x, y, r * 4.2 * flare, colour, 0.32 * emphasis);
+  drawGlow(ctx, x, y, r * 2.1 * flare, colour, 0.6 * emphasis);
+  drawSpikes(ctx, x, y, r * 3.4, tint(0.5), 0.5 * flare * emphasis, 0.4);
+
+  const core = ctx.createRadialGradient(x, y, 0, x, y, r * 1.1);
+  core.addColorStop(0, '#ffffff');
+  core.addColorStop(0.35, tint(0.75));
+  core.addColorStop(0.75, tint(0.25));
+  core.addColorStop(1, `rgba(${cr}, ${cg}, ${cb}, 0)`);
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = emphasis;
+  ctx.fillStyle = core;
+  ctx.beginPath();
+  ctx.arc(x, y, r * 1.1, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 }
@@ -852,7 +1082,8 @@ export function renderConstellation(
   st: RenderState,
 ) {
   drawBackground(ctx, w, h, st);
-  drawSunlight(ctx, w, h, st, layout.extent * st.camera.scale);
+  drawShapeGlow(ctx, w, h, layout, st);
+  drawSunlight(ctx, w, h, layout, st);
   drawLinks(ctx, w, h, layout, st);
   drawBelts(ctx, w, h, layout, st);
 
@@ -865,7 +1096,7 @@ export function renderConstellation(
     const dimmed = st.focus && !st.focus.has(node.key);
     const emphasis = dimmed ? 0.22 : 1;
 
-    if (node.level === 0) drawSun(ctx, p.x, p.y, r, st, emphasis);
+    if (node.level === 0) drawSun(ctx, p.x, p.y, r, st, emphasis, layout.sunShape);
     else drawStarBody(ctx, p.x, p.y, r, node, st, emphasis);
 
     if (st.matched?.has(node.key)) {

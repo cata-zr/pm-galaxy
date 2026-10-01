@@ -363,9 +363,68 @@ button {
   box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55);
 }
 
+/*
+ * A shipped constellation's card echoes the celebration inside it: a slowly
+ * turning border in the same candy hues its stars cycle through.
+ */
+@property --candy-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
 .system-complete {
-  border-color: rgba(255, 194, 71, 0.5);
-  box-shadow: 0 0 0 1px rgba(255, 194, 71, 0.12), 0 10px 40px rgba(255, 150, 30, 0.14);
+  position: relative;
+  border-color: transparent;
+}
+
+.system-complete::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  padding: 2px;
+  border-radius: inherit;
+  background: conic-gradient(
+    from var(--candy-angle),
+    #ff0048, #ff6a00, #ffec00, #28ff1e, #00d6ff, #961eff, #ff00be, #ff0048
+  );
+  /* Only the padding ring shows: the border, not a fill. */
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  animation: candy-turn 6s linear infinite;
+}
+
+.system-complete:hover {
+  border-color: transparent;
+}
+
+.system-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  padding: 3px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #1a1206;
+  background: linear-gradient(135deg, #ffe08a, var(--accent));
+  border-radius: 999px;
+  box-shadow: 0 0 14px rgba(255, 194, 71, 0.55);
+}
+
+@keyframes candy-turn {
+  to {
+    --candy-angle: 360deg;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .system-complete::before {
+    animation: none;
+  }
 }
 
 .system-preview {

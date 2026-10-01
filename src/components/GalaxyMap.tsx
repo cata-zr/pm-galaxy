@@ -182,6 +182,7 @@ export function GalaxyMap({
                     labelMode="minimal"
                     interactive={false}
                   />
+                  {p.complete && <span className="system-badge">✦ Shipped</span>}
                 </div>
                 <div className="system-body">
                   <div className="system-title">

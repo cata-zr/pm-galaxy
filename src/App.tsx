@@ -125,7 +125,8 @@ export default function App() {
   // Layouts are expensive-ish and must be stable — compute once per galaxy.
   const layouts = useMemo(() => {
     const map = new Map<string, Layout>();
-    for (const c of galaxy?.constellations ?? []) map.set(c.id, layoutConstellation(c));
+    // The index picks a flat galaxy's silhouette, so neighbours never share one.
+    galaxy?.constellations.forEach((c, i) => map.set(c.id, layoutConstellation(c, i)));
     return map;
   }, [galaxy]);
 
