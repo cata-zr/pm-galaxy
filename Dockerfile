@@ -22,6 +22,26 @@ COPY . .
 # build rather than quietly shipping stale or broken output.
 RUN npm run build
 
+# ----------------------------------------------------------------------- api
+# The Jira adapter. A browser cannot call Jira directly — the REST API sends no
+# CORS headers for our origin, and the API token must never ship in a bundle
+# nginx serves to the world — so this holds the credential and speaks to Jira
+# server-to-server, where origin policy does not apply.
+#
+# `vite build --ssr` bundles the server to a single file whose only import is
+# `node:http`, so there is deliberately no `npm ci` here and no node_modules in
+# the image: nothing to install, nothing to audit, nothing to go stale.
+FROM docker.io/library/node:24-alpine AS api
+
+WORKDIR /app
+COPY --from=build /app/dist-server ./dist-server
+
+# Reached only through nginx's /api/ proxy; docker-compose.yml publishes no host
+# port for this service, so the token is never behind an open port.
+EXPOSE 8081
+
+CMD ["node", "dist-server/main.js"]
+
 # --------------------------------------------------------------------- serve
 FROM docker.io/library/nginx:1-alpine AS serve
 

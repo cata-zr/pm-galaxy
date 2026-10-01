@@ -25,3 +25,8 @@ dist-ssr
 
 # Playwright MCP scratch output
 .playwright-mcp
+
+# Secrets (JIRA_API_TOKEN) and the server build output.
+.env
+dist-server
+dist-probe

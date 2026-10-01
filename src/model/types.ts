@@ -20,8 +20,20 @@ export interface Ticket {
   issueType: string;
   /** Parent key. `null` only for the L0 epic. */
   parent: string | null;
-  /** Keys this ticket is blocked by (same level, same constellation). */
+  /** Keys this ticket is blocked by, inside this constellation. */
   blockedBy: string[];
+  /**
+   * Dependencies whose other end sits in a *different* constellation (or
+   * outside the galaxy entirely). They are kept apart from `blockedBy` because
+   * `engine/layout.ts` positions one constellation at a time and has no
+   * coordinates to draw them to — but they still have to be counted and shown,
+   * or a ticket holding up another project would read as a quiet grey star.
+   * Listed as text in `TicketPanel`; never drawn as an arc.
+   */
+  blockedByExternal?: string[];
+  /** Keys outside this constellation that are blocked by this ticket. Folded
+   *  into `StarNode.blocks`, so such a ticket still goes red. */
+  blocksExternal?: string[];
   assignee?: string;
   storyPoints?: number;
   sprint?: string;
@@ -45,11 +57,31 @@ export interface Constellation {
   tickets: Ticket[];
 }
 
+/**
+ * What the source noticed while loading, surfaced in the UI rather than buried
+ * in a log. A mis-set `JIRA_STATUS_*` variable is otherwise diagnosed by
+ * noticing a star is the wrong colour, which is no way to find it.
+ */
+export interface SourceDiagnostics {
+  /** Jira status names that matched no configured mapping. */
+  unmappedStatuses: string[];
+  /** Tickets found deeper than L3 and clamped to it. */
+  clampedLevels: number;
+  /** Dependency links pointing outside their own constellation. */
+  externalLinks: number;
+  /** How many epics the discovery query matched. */
+  epics: number;
+  /** The discovery query that ran. Shown when it matched nothing, so "no epics
+   *  found" can be checked against what was actually asked. */
+  epicJql?: string;
+}
+
 export interface Galaxy {
   constellations: Constellation[];
   /** Where the data came from, shown in the header. */
   sourceLabel: string;
   fetchedAt: string;
+  diagnostics?: SourceDiagnostics;
 }
 
 // ---------------------------------------------------------------------------
@@ -164,10 +196,18 @@ export function blockerKeys(c: Constellation): Set<string> {
   return keys;
 }
 
-/** The tickets actually holding the constellation up: blockers that aren't done. */
+/**
+ * The tickets actually holding the constellation up: blockers that aren't done.
+ *
+ * Counts dependents outside this constellation too. Without that, a ticket
+ * blocking another project would be missing from the galaxy's "blocking"
+ * headline — the one number principle 1 calls the most useful on the map.
+ */
 export function blockersOf(c: Constellation): Ticket[] {
   const keys = blockerKeys(c);
-  return c.tickets.filter((t) => keys.has(t.key) && t.status !== 'done');
+  return c.tickets.filter(
+    (t) => t.status !== 'done' && (keys.has(t.key) || (t.blocksExternal?.length ?? 0) > 0),
+  );
 }
 
 export function childrenOf(c: Constellation, key: string): Ticket[] {

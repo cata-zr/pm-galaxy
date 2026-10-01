@@ -40,14 +40,37 @@ function RelationRow({
   );
 }
 
+/**
+ * A dependency whose other end is in a different constellation. Not a button:
+ * there is nowhere to fly the camera to, because the other ticket has no star
+ * on this canvas. Shown anyway — dropping it would be the map quietly claiming
+ * nothing is waiting.
+ */
+function ExternalRow({ keyName }: { keyName: string }) {
+  return (
+    <div className="relation relation-external">
+      <span className="dot dot-external" aria-hidden />
+      <span className="relation-key">{keyName}</span>
+      <span className="relation-title">outside this constellation</span>
+    </div>
+  );
+}
+
 export function TicketPanel({ constellation, ticket, onClose, onJump }: Props) {
   const index = ticketIndex(constellation);
   const parent = ticket.parent ? index.get(ticket.parent) : undefined;
   const children = childrenOf(constellation, ticket.key);
   const blockedBy = ticket.blockedBy.map((k) => index.get(k)).filter((t): t is Ticket => !!t);
   const blocks = blocking(constellation, ticket.key);
+  const blockedByExternal = ticket.blockedByExternal ?? [];
+  const blocksExternal = ticket.blocksExternal ?? [];
   const doneChildren = children.filter((c) => c.status === 'done').length;
-  const openBlockers = blockedBy.filter((b) => b.status !== 'done');
+  // An external blocker's status is not in this constellation, so it cannot be
+  // known to be cleared — count it as open rather than silently ignoring it.
+  const openBlockers = [
+    ...blockedBy.filter((b) => b.status !== 'done').map((b) => b.key),
+    ...(ticket.blockedByExternal ?? []),
+  ];
 
   return (
     <aside className="panel">
@@ -122,7 +145,7 @@ export function TicketPanel({ constellation, ticket, onClose, onJump }: Props) {
         </section>
       )}
 
-      {blockedBy.length > 0 && (
+      {(blockedBy.length > 0 || blockedByExternal.length > 0) && (
         <section>
           <h3>Blocked by</h3>
           <div className="relations">
@@ -134,16 +157,22 @@ export function TicketPanel({ constellation, ticket, onClose, onJump }: Props) {
                 note={b.status === 'done' ? 'cleared' : 'open'}
               />
             ))}
+            {blockedByExternal.map((k) => (
+              <ExternalRow key={k} keyName={k} />
+            ))}
           </div>
         </section>
       )}
 
-      {blocks.length > 0 && (
+      {(blocks.length > 0 || blocksExternal.length > 0) && (
         <section>
           <h3>Blocks</h3>
           <div className="relations">
             {blocks.map((b) => (
               <RelationRow key={b.key} ticket={b} onJump={onJump} />
+            ))}
+            {blocksExternal.map((k) => (
+              <ExternalRow key={k} keyName={k} />
             ))}
           </div>
         </section>

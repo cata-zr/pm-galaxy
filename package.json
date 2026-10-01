@@ -5,9 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && npm run build:server",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:server": "vite build --ssr server/main.ts --outDir dist-server",
+    "start:server": "node dist-server/main.js",
+    "diagnose": "vite build --ssr server/probe.ts --outDir dist-probe --logLevel error && node --env-file=.env dist-probe/probe.js"
   },
   "dependencies": {
     "react": "^19.2.8",

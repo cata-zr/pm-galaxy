@@ -1,18 +1,20 @@
 # Checkpoint — Constellation
 
-Updated 2026-09-10 (third checkpoint). The app is complete and working on dummy
-data, and now **ships as a container** (`docker compose up -d`). Since the first
-checkpoint it also gained **epic due dates**, a filterable and searchable galaxy
-map, simplified top-level navigation, and a retuned star palette. The Jira
-connection is still deliberately **not** started — that remains the next phase.
+Updated 2026-09-14 (fourth checkpoint). **The Jira connection is built.** The app
+no longer runs on dummy data: it reads real epics from Jira through a small
+server-side adapter, and the fixture has moved *behind* that adapter as a
+`CONSTELLATION_SOURCE=dummy` debug mode. Blocked leaves also gained an orbiting
+**debris belt** (§9), the third visual channel after brightness and halo spread.
 
 Read this file plus `README.md` (user-facing) and you should be able to pick the
-work up cold. §9 lists exactly what changed and §10 is the state of play.
+work up cold. §9 lists exactly what changed, §10 is the state of play, and §11 is
+the Jira adapter in detail.
 
-> ⚠️ **Two things to check before trusting anything below.** The container files
-> are **untracked in git** (§10), so a fresh clone cannot deploy. And the dummy
-> due dates drift against the real clock (§5) — one of the four demo states
-> expires around **2026-09-12**.
+> ⚠️ **Two things to check before trusting anything below.** The adapter has only
+> ever run against a **stub Jira** (§9) — no real credentials have been used, so
+> every field mapping is verified in shape but not against your instance. And the
+> dummy due dates have now **expired** (§5): the "due soon" demo state is dead and
+> two constellations read overdue.
 
 ---
 
@@ -34,8 +36,9 @@ The idea: render each project as a **constellation**.
 - Clicking a star opens a summary + status of that ticket.
 - Multiple projects run at once, so there's a **galaxy map** of all constellations.
 
-Data eventually comes from Jira via a personal token, discovering projects by
-label. **This phase: validate the design on dummy data first.**
+Data comes from Jira via an API token, discovering epics by label (§11). The
+design was validated on dummy data first; that fixture still exists as a debug
+mode.
 
 Target audience is the team and its stakeholders: it should be legible in a
 standup on a shared screen, and rewarding enough that people open it voluntarily.
@@ -92,8 +95,14 @@ These are the rules the current design follows. Break them only deliberately.
 13. **One naming scheme in the UI.** The legend's left column is what the ticket
     *is*; the right column is how to spot it. No mixing star types ("red dwarf")
     with state labels ("lit").
-14. **One seam for data.** The UI only ever sees the domain model. Swapping dummy
-    data for Jira must touch exactly one file.
+14. **One seam for data.** The UI only ever sees the domain model. All of Jira's
+    shape stays in `server/`; the client has one code path whatever the source.
+15. **A ticket's own state and its effect on others are different channels.**
+    Colour is reserved for effect on others (principle 1), so "this ticket is
+    itself stuck" could not be a colour. It became an orbiting belt of debris —
+    a third channel, orthogonal to brightness and halo spread, that composes with
+    whatever the star already is (§9). Grey, deliberately: a red belt around a
+    red blocking star merges into one blob and costs both readings.
 
 ---
 
@@ -102,14 +111,19 @@ These are the rules the current design follows. Break them only deliberately.
 ```bash
 cd project-constellation
 npm install
-npm run dev          # http://localhost:5173
-npm run build        # static SPA into dist/ ; tsc -b runs first
+cp .env.example .env # JIRA_BASE_URL / JIRA_EMAIL / JIRA_API_TOKEN
+npm run dev          # http://localhost:5173 — API is Vite middleware
+npm run build        # dist/ (browser) + dist-server/ (API); tsc -b runs first
 
-docker compose up -d # or `podman compose` — builds and serves on :8080 (§7)
+CONSTELLATION_SOURCE=dummy npm run dev   # no Jira needed
+
+docker compose up -d # or `podman compose` — two containers, serves on :8080 (§7)
 ```
 
 Stack: **Vite 8 + React 19 + TypeScript**, canvas 2D rendering, **no graph or
-animation libraries**. Deployed as a static bundle behind nginx in a container.
+animation libraries**, and **zero runtime dependencies on the server** — the
+bundled adapter imports only `node:http`. It is no longer a pure static SPA: the
+browser cannot call Jira directly (§11), so a small API ships beside it.
 
 Route lives in the URL hash: `#/tax-engine`. Empty hash = galaxy map.
 
@@ -147,7 +161,7 @@ src/
   model/types.ts     Domain model + derived helpers (progressOf, dueOf, …)
   model/dummy.ts     Deterministic fake galaxy (5 epics, ~200 tickets)
   model/derive.ts    Leaf → parent status roll-up
-  model/source.ts    THE SEAM: GalaxySource { label, load() }
+  model/source.ts    THE SEAM: GalaxySource — fetches /api/galaxy
   lib/rng.ts         mulberry32 + FNV hash + rngFor(key)
   engine/layout.ts   Ticket tree → star positions (radial tidy tree)
   engine/theme.ts    Visual language: Visual → palette; link colours; UI colours
@@ -158,8 +172,17 @@ src/
   components/GalaxyMap.tsx            Landing grid + summary, filters, search
   components/TicketPanel.tsx          Ticket detail
   components/Legend.tsx               Legend
-  App.tsx                             Load, hash routing, layout memoisation,
-                                      galaxy filter/search state
+  App.tsx                             Load/error/empty states, hash routing,
+                                      layout memoisation, filter/search,
+                                      refresh + diagnostics banner
+
+server/              THE JIRA ADAPTER — never reaches the browser (§11)
+  config.ts          Env parsing, validation, base-URL normalisation
+  jira.ts            REST client: auth, pagination, endpoint fallback, errors
+  galaxy.ts          Jira JSON → domain model
+  cache.ts           TTL + single-flight
+  handler.ts         The one route, shared by dev middleware and production
+  main.ts            node:http entry (production only)
 ```
 
 ### 4.1 Domain model (`model/types.ts`)
@@ -215,7 +238,15 @@ Applied in `source.load()`, so it holds for any source:
 
 Memoised, immutable (returns new tickets, so optional fields like `dueDate`
 survive the spread). `dummy.ts` deliberately does **not** roll up any more — it
-only generates leaf statuses.
+only generates leaf statuses, and neither does the Jira adapter: every source
+hands over raw leaves and the client rolls up.
+
+**This ordering was deliberately left alone.** Hoisting `blocked` to the top was
+considered and rejected: `visualOf` treats anything that is not done and not
+in_progress as `unlit`, so a workstream 80% finished with one blocked descendant
+would have gone grey and read as *not started*. With the current order a parent is
+only `blocked` when no child is `in_progress` **and** none is `done` — i.e.
+nothing under it has started — which is exactly when `unlit` is honest.
 
 ### 4.4 Layout — radial tidy tree (`engine/layout.ts`)
 
@@ -352,7 +383,14 @@ the in-flight subset, **173 stars, 55 lit, 33 blocking, 1 overdue, 1 shipped**.
 If those numbers change without you touching `dummy.ts`, something in the seeding
 or the roll-up drifted.
 
-⚠️ **The due dates decay, and the clock is already running.** The offsets are
+⚠️ **The fixture now lives behind the API**, not in the browser bundle:
+`CONSTELLATION_SOURCE=dummy` makes `/api/galaxy` serve it. It was kept
+deliberately — `vault-rotation` is the only 100%-complete constellation in
+existence and therefore the only way to exercise the sun's ignition, and
+`merchant-onboarding` is the worst case for render load. Switching is an env var
+and a restart, not a rebuild.
+
+⚠️ **The due dates decay, and the deadline has now passed.** The offsets are
 fixed but `dueOf` compares against real `now`, which is correct for Jira and
 wrong for a fixture. As of 2026-09-10 the fixture reads:
 
@@ -363,12 +401,12 @@ wrong for a fixture. As of 2026-09-10 the fixture reads:
 | `merchant-onboarding` | 2026-08-28 | −13 | overdue |
 | `vault-rotation` | 2026-08-14 | −27 | met |
 
-**`tax-engine` tips into "overdue" on 2026-09-12**, and nothing else is inside
-the 14-day window (`unified-checkout` is 40 days out), so from that date the
-"Due soon" chip shows 0 and disables itself. The demo will look like the feature
-is broken when it is only out of date. Fix by re-anchoring `BASE` to today and
-keeping the offsets — do **not** "fix" `dueOf` to compare against `fetchedAt`,
-which would be wrong the moment real Jira data arrives.
+**This has now happened.** `tax-engine` tipped into overdue on 2026-09-12, so as
+of 2026-09-14 the fixture reads **2 overdue** and the "Due soon" chip shows 0 and
+disables itself — confirmed on screen. The feature is fine; the fixture is out of
+date. Fix by re-anchoring `BASE` to today and keeping the offsets — do **not**
+"fix" `dueOf` to compare against `fetchedAt`, which would be wrong the moment real
+Jira data arrives.
 
 Rules the generator respects: a ticket is never `done` while a blocker is open;
 L1s occasionally depend on an earlier L1; L2s usually queue behind the previous
@@ -396,30 +434,34 @@ sibling. Parent statuses are **not** set here (see §4.3).
 - **Due dates stay out of the canvas.** They are a project-level fact, not a
   property of a star, and the renderer's colour vocabulary is already fully
   spoken for.
+- **The server returns the domain model, not raw Jira.** The alternative — a
+  pass-through proxy with the mapping on the client — would put `customfield_*`,
+  `statusCategory` and ADF parsing in the bundle for no gain.
+- **Not a general Jira proxy.** One read-only route, one shape. A route that
+  forwarded arbitrary Jira paths would hand anyone who can reach the app the full
+  power of the token, including writes.
+- **`CONSTELLATION_SOURCE` is a server-side switch**, so the client has exactly
+  one code path. The alternative (client picks its source) would need the mode
+  shipped into the bundle or a second round trip.
+- **Dummy data stayed.** Deleting it would leave no way to exercise the ignition
+  or the render worst case until Jira happens to supply a finished epic.
+- **The belt is not a `Visual`.** It reads `ticket.status` directly, so
+  `visualOf`, the `Visual` union and the signed-off `STAR_PALETTE` are untouched
+  and it composes with whatever the star already is.
 
 ---
 
 ## 7. Known gaps / next steps
 
-**Immediate next phase — Jira.** All of it goes behind `GalaxySource` in
-`model/source.ts`; nothing else changes.
-
-1. A browser can't call Jira directly (CORS, and the PAT must not ship in the
-   bundle) → add a thin local proxy (Vite middleware or a small Node server)
-   holding the token in an env var and exposing `GET /api/galaxy`.
-2. Discover epics: `jql=labels = "constellation" AND issuetype = Epic`.
-3. Pull each tree: either `parent = <epicKey>` recursively, or one query per epic
-   on an epic-specific label (single round trip, depth-agnostic, covers L3 free).
-4. Map: `fields.status.statusCategory.key` → todo/in_progress/done;
-   `fields.issuelinks` with `type.inward === "is blocked by"` → `blockedBy[]`;
-   `fields.parent.key` → `parent`; **`fields.duedate` → `dueDate`** (already a
-   plain `YYYY-MM-DD`, so it maps straight across); story points are usually
-   `customfield_10016` (verify on your instance).
-5. Pass the result through `deriveGalaxy()` — never trust parent statuses.
+**Jira — built.** See §11 for the adapter in detail. In summary: `server/` holds
+the token and does the mapping, nginx proxies `/api/` to it, and `model/source.ts`
+fetches `/api/galaxy`. Configuration is runtime env (`.env`), never build-time.
 
 **Deployment — Docker (built).** `docker compose up -d` builds and serves on
 `:8080`; see the README's "Deploy it" section for the operator-facing detail.
-Files: `Dockerfile`, `docker-compose.yml`, `docker/nginx.conf`, `.dockerignore`.
+Files: `Dockerfile`, `docker-compose.yml`, `docker/nginx.conf`, `.dockerignore`,
+`.env.example`. **Two services now**: `constellation` (nginx, the only published
+port) and `constellation-api` (the adapter, no published port).
 
 Notes for whoever touches it next:
 
@@ -442,17 +484,29 @@ Notes for whoever touches it next:
   `index.html` `no-cache`, assets `immutable` + gzipped, unknown paths fall back
   to `index.html`, missing assets 404.
 
+**Settled since the third checkpoint**
+
+- *Discovery*: level-wise `parent in (...)` walk, not a per-epic label. No
+  process discipline required below the epic.
+- *Blocked*: comes from issue links, never from a status — that is how the team
+  works. A `blocked` **status** also exists and is configurable, but it means
+  only "this ticket is stuck", not "others are waiting".
+- *Refresh*: manual button plus a `synced HH:MM` stamp off `Galaxy.fetchedAt`.
+
 **Open questions for the team**
 
-- Label vs. `parent` traversal for discovery (label is simpler but relies on
-  people applying it).
-- Which Jira states count as `blocked` — only leaves need the mapping.
+- **Which link types?** `Blocks` exists in the instance; **there is no `Depends`
+  link type** — 22 types are configured and none is called that. If a second type
+  is in use it goes by another name, and if its outward phrase reads "depends on"
+  it must go in `JIRA_DEPENDS_LINK_TYPES` or every arrow it produces is reversed.
 - Is 14 days (`NEAR_DUE_DAYS`) the right "due soon" window for the team's
   cadence? It was a default, not a decision.
 - Should a near/overdue deadline show up on the **constellation canvas** at all,
   or is the overlay enough?
-- Refresh model: load-only, or poll every N minutes with a "last synced" stamp
-  (`Galaxy.fetchedAt` and `sourceLabel` already exist for this).
+- Polling instead of the manual refresh, if this ends up on a wall screen.
+- `TicketPanel`'s `blocked` badge/dot are **red** (`.badge-blocked`,
+  `.dot-blocked`) while the map now says grey debris. Pre-existing, but the belt
+  makes it an inconsistency against principle 13. Move them to the belt grey?
 
 **Deliberately not built yet**
 
@@ -482,6 +536,20 @@ Notes for whoever touches it next:
   `npx oxlint` currently emits two **pre-existing** warnings
   (`ConstellationScene` set-state-in-effect, `ConstellationCanvas` ref-in-render).
   They are not regressions — don't be alarmed, and don't "fix" them casually.
+- **`npm run diagnose`** is the first thing to run on any "why is it empty"
+  question — it reuses `server/config.ts`, so what it prints is what the app
+  sends, not a re-implementation that can disagree.
+- **Testing the adapter without credentials.** A ~120-line stub Jira (a
+  `node:http` server that answers `POST /rest/api/3/search/jql` from a fixture)
+  is how every field mapping in §11 was verified: point `JIRA_BASE_URL` at it and
+  run `node dist-server/main.js`. It covered the level-wise walk, both link
+  directions, a reversed link type, a cross-epic link, ADF descriptions, story
+  points, L4 clamping, an unmapped status and 401 handling. **It was not
+  committed** — it lived in a scratch directory — so it needs rewriting if the
+  adapter is iterated on without a live instance. Worth committing next time.
+- The api runs standalone: `CONSTELLATION_SOURCE=dummy PORT=8199 node
+  dist-server/main.js`, then `curl localhost:8199/api/galaxy`. Faster than the
+  browser for checking a mapping change.
 - Visual constants worth knowing: background `#010207`, accent/gold `#ffc247`,
   blue `#37a8ff`, red `#ff5c4e`, green `#52e0a4`, due-soon amber `#ffb648`.
   Camera scale is clamped to `[0.12, 4]`; `fitCamera` uses a 90px margin; focus
@@ -489,97 +557,250 @@ Notes for whoever touches it next:
 
 ---
 
-## 9. What changed since the first checkpoint
+## 9. What changed in the fourth checkpoint
 
-Layout, camera and RNG were never touched. The renderer changed only in how a
-star is coloured and haloed (`pulseTo` / `glowSize`); its frame order, geometry
-and label planning are untouched.
+Layout, camera and RNG were untouched except for one bug fix (below). The
+renderer gained one new draw pass and changed nothing about the existing ones.
 
-**Deployment — new in the third checkpoint**
-- `Dockerfile` (two-stage: `node:24-alpine` builds, `nginx:1-alpine` serves),
-  `docker-compose.yml`, `docker/nginx.conf`, `.dockerignore`. Details and the
-  Podman/Docker gotchas are in §7.
+**The Jira adapter — the headline.** New `server/` directory, detailed in §11.
+`model/source.ts` is now a single `apiSource` hitting `/api/galaxy`; `dummySource`
+is gone from the client and the fixture is served by the API instead.
 
-**Due dates**
-- `Ticket.dueDate?` added; `DueState`, `DueInfo`, `NEAR_DUE_DAYS`, `dueOf()` and
-  `formatDue()` added to `model/types.ts` (§4.2).
-- `dummy.ts`: `BASE` extracted, `dueInDays` per epic spec, four of five epics
-  given a deadline covering clear / soon / overdue / met, one left without.
-- Shown on the galaxy card stats row, in the constellation stats overlay under
-  the title, and as a `Due` row in `TicketPanel` for any ticket that has one.
+**Blocked belts** (`engine/theme.ts` `BELT`, `engine/renderer.ts` `drawBelt` /
+`drawBelts`, `Legend.tsx`, `.legend-star-blocked`).
+- Leaves only. A parent's status is a roll-up, so belting parents would ring a
+  whole subtree because one sub-task is stuck.
+- One dashed ellipse with an animated `lineDashOffset`, not N particle arcs: one
+  path per blocked star and no `shadowBlur`, which is the expensive call in that
+  file. Because dashes are spaced by arc length, a squashed ellipse makes them
+  quicken along the long edges — which is what sells it as an orbit.
+- Signed-off values: `radius` 3.4r (clears `blocking`'s ~3.2r halo), `squash`
+  0.35, `chunks` 24, `duty` 0.38, `period` 12s, `maxLineWidth` 2.4,
+  `minScreenRadius` 9px, colour `#c2cde8` at 0.5 alpha.
+- Two things were tuned, not guessed: at 14 chunks the belt read as a **dashed
+  selection outline** when zoomed in, and without the width cap it became a heavy
+  ring competing with the star. Both were found by looking at it.
+- A circle reads as a **loading spinner** — "the app is fetching" — which is why
+  it is a tilted ellipse turning slowly. Do not speed it up.
 
-**Galaxy map**
-- Headline totals now exclude completed constellations, and gained `overdue` and
-  `shipped` counts plus an explanatory note.
-- Quick-filter chips with counts, and a constellation search box.
-- Empty state with a "Clear filters" action.
-- Filter/query state lifted into `App.tsx` so it survives a trip into a
-  constellation and back.
+**Model** (`model/types.ts`)
+- `Ticket.blockedByExternal?` / `blocksExternal?` — dependencies crossing between
+  constellations (§11). `blockersOf()` now counts external dependents, or a
+  ticket blocking another project would be missing from the galaxy headline.
+- `Galaxy.diagnostics?` (`SourceDiagnostics`) — what the source noticed.
 
-**Navigation**
-- Per-constellation tabs deleted from the topbar (`.tabs` CSS removed).
-- `← Galaxy map` backlink shown in the topbar while inside a constellation;
-  `.source-label` now right-aligns itself with `margin-left: auto`.
+**Client**
+- `App.tsx`: loading / error / **empty** states (zero epics is a legitimate
+  answer, not a failure), a manual Refresh with a `synced HH:MM` stamp, and a
+  diagnostics banner. A failed *refresh* keeps the galaxy it already had and
+  shows a warning strip rather than throwing away a working map.
+- `TicketPanel`: external dependencies listed as inert text rows; the "waiting
+  on N" banner counts them, since their status is not knowable from here.
+- `GalaxyMap`: "1 star" rather than "1 stars" — real data can have one ticket.
 
-**Progress bar**
-- Blue while incomplete, gold only at 100% (`.progress-bar.complete`), on both
-  the galaxy cards and the constellation overlay.
+**Bug fixed in `engine/layout.ts`.** `const level = parentNode.level + 1` read
+`RING_GAP[4]` for a level-3 parent. Jira hierarchies can be deeper than the four
+levels the model has sizes for, so the source clamps `Ticket.level` at 3 — which
+makes a level-3 parent with level-3 children possible for the first time. The
+`undefined` gap produced `NaN` distances, the NaN propagated into `layout.extent`,
+and **the entire canvas rendered blank**. The lookup is now clamped too. Dummy
+data could never have caught this: its L3 nodes are always leaves.
 
-**Star palette** — tuned live with the user; these are the signed-off values.
-- Final intensities: `igniting` 0.52 → **0.66**, `blocking` 0.40 → **0.88**,
-  `blocking_active` 0.46 → **0.88**, `lit` 0.82 → **0.70**. Note `lit` ended up
-  *lower* than it started — see principle 2; the blockers took the top slot on
-  purpose. `unlit` stays at 0.10 and must.
-- `glowSize` / `glowAlpha` added to `StarPalette`. Final state of the map, in
-  units of star radius:
+**Build**
+- `npm run build` now also emits `dist-server/` via `vite build --ssr`. The bundle
+  imports only `node:http`, so the api image carries no `node_modules`.
+- New `tsconfig.server.json` (bundler resolution — `tsconfig.node.json` is
+  `nodenext`, which rejects the extensionless imports `src/` uses).
+- `.env` and `dist-server` gitignored; `.env` also excluded from the build context.
 
-  | | halo | halo alpha | core alpha |
-  | --- | --- | --- | --- |
-  | `igniting` | 2.42r | 0.14 | 0.76 |
-  | `blocking` | 3.10r | 0.22 | 0.85 |
-  | `blocking_active` | 3.27r | 0.24 | 0.85 |
-  | `lit` | 3.99r | 0.21 | 0.78 |
-
-  The blockers are the brightest thing on the map in both core and halo; `lit`
-  keeps the widest halo but the softest one. That ordering is the design — if a
-  future change puts `lit` back on top of the blockers, it has broken
-  principle 2, not fixed it.
-- `blocking_active` now breathes red ↔ amber via the new `pulseTo` mechanism
-  (§4.5) instead of pulsing red at constant hue, `pulseRate` 0.85 → **3**
-  (~7.4s per breath → ~2.1s; at 0.85 people simply did not notice it), and
-  `pulseSkew: 4` because the first cut of that pulse read as a yellow star
-  rather than a red one.
-
-**Verification status:** the galaxy map, the due-date states and the Overdue
-filter were confirmed by screenshot; the blue progress bar and green "delivered"
-were confirmed by the user. The palette values above were tuned over four rounds
-of live feedback from the user rather than by screenshot — "bright enough" and
-"fast enough to notice" are calls only a human watching the map can make. The
-container was verified by building and running it (§7).
-
----
+**Verification status.** The belt was confirmed by screenshot at fit and at zoom
+on `merchant-onboarding` (10 blocked leaves), and absent from the galaxy
+miniatures as intended; 144fps there, i.e. pinned to the display refresh with no
+dropped frames. The adapter was verified against a **stub Jira** covering the
+level-wise walk, both link directions, a reversed link type, a cross-epic link,
+ADF descriptions, story points, L4 clamping, an unmapped status, 401 handling and
+the auth header format — plus a check that the token appears in no log. The
+container path was verified on Podman 5.8.1: both images build, `api` reports
+healthy before nginx starts, `/api/galaxy` proxies, one `Cache-Control` header,
+no published port on the api, 12s cold start. **No real Jira credentials have been
+used**, so the field mappings are verified in shape only.
 
 ## 10. State of play — read before deploying
 
-**The container files are untracked in git.** `Dockerfile`,
-`docker-compose.yml`, `docker/nginx.conf` and `.dockerignore` show as `??` in
-`git status`. Commit `54e75ac` ("added container") contains only `CHECKPOINT.md`,
-`README.md` and the deletion of a stray `galaxy.png` — the container itself was
-never staged. So a fresh clone on the AWS host gets a README instructing you to
-run `docker compose up -d` and no compose file to run. **Stage those four paths
-before deploying** (note `docker/` is a directory, easy to miss).
+**The container files are committed now** (they were untracked at the third
+checkpoint — that warning is resolved). New files this round that must be staged:
+`server/`, `tsconfig.server.json`, `.env.example`.
 
-Everything else is committed: all `src/` work sits in `db25bb6`.
+**`.env` is gitignored and must never be committed** — it holds the API token,
+which is unscoped and equivalent to your account password across Jira and
+Confluence. `.dockerignore` excludes it from the build context too, so it cannot
+end up in an image layer.
+
+**First contact with real Jira (2026-09-16).** The adapter ran against the live
+instance and found nothing, with the app reporting "No epics found". The cause
+was **not** the query: Jira answers an unaccepted credential by serving the
+request **anonymously** instead of refusing it, announcing that only in an
+`x-seraph-loginreason: AUTHENTICATED_FAILED` header. Search then returns `200`
+with zero issues — an anonymous caller can browse none of the 803 projects — so
+a rejected token was indistinguishable from a label that matches nothing.
+
+Confirmed by probe: `/myself` 401, `mypermissions` reporting
+`BROWSE_PROJECTS: havePermission: false`, `/project/search` total 0, and the
+seraph header present on *every* response including the 200s. The auth header
+itself was well formed (no wrapping, no stray whitespace, token a clean
+192-char `ATATT3x…`), and Bearer auth returned 403 — so the credential, not the
+code. **`server/jira.ts` now checks that header** and raises the real error, and
+`npm run diagnose` (`server/probe.ts`) exists to answer this class of question
+in one command. The empty state also shows the JQL that ran.
+
+Lesson worth keeping: a `200` from Jira does not mean the request was
+authenticated.
 
 **Not yet done, in the order it probably matters:**
 
-1. Stage and commit the container files (above).
-2. Re-anchor the dummy due dates, or the "due soon" demo state expires
-   2026-09-12 (§5).
-3. The Jira adapter (§7) — the actual next phase of work.
+1. **Get a working token**, then run the adapter against real Jira. Nothing below is in doubt structurally,
+   but every field mapping has only met a stub. Expect to iterate on
+   `JIRA_STATUS_*` (the diagnostics banner will name the unmapped ones for you)
+   and on the story-points field id.
+2. **Settle the second link type** (§7). There is no `Depends` type in the
+   instance, so this is the one open question that can silently produce *wrong*
+   arrows rather than missing ones.
+3. Re-anchor the dummy due dates (§5) — the "due soon" demo state has expired.
+4. Decide on the red-vs-grey `blocked` badge inconsistency in `TicketPanel` (§7).
 
-**Unverified claims worth a moment's scepticism.** The README says the render
-loop holds "170+ animated stars at 60fps". That number predates this session and
-has not been re-measured since the `lit` halo grew to 3.99r, which is more
-overdraw per done star than when it was written. `vault-rotation` (30 done stars,
-all haloed, plus the ignition wash) is the worst case and the place to check.
+**Unverified claims worth a moment's scepticism.** The README says the render loop
+holds "170+ animated stars at 60fps". The belt pass measured 144fps on
+`merchant-onboarding`, but that is the display's refresh ceiling, not headroom —
+nobody has measured how much slack is left. `vault-rotation` (30 done stars at
+3.99r halos, plus the ignition wash) remains the worst case and has no belts at
+all, so it is untouched by this round.
+
+---
+
+## 11. The Jira adapter
+
+### Why a server exists
+
+A browser cannot call Jira directly, for two independent reasons, and it is worth
+being precise because the second one is the easier to get wrong.
+
+1. **CORS is enforced by the browser, not by Jira.** A `fetch` to
+   `*.atlassian.net` carries an `Authorization` header, which makes it a
+   non-simple request, so the browser sends a preflight `OPTIONS` first. Atlassian
+   Cloud's REST API does not answer that with our origin allowed, so the browser
+   discards the response — even though Jira answered it correctly. Being
+   authenticated is irrelevant; authentication and origin policy are separate
+   gates, and a correctly-authenticated cross-origin read is exactly what CORS is
+   strictest about. `mode: 'no-cors'` does not help: the response is opaque.
+2. **The token cannot ship in the bundle.** An Atlassian API token is **not
+   scoped** — it carries the account's full permissions across Jira and
+   Confluence. And `import.meta.env.VITE_*` values are substituted into the JS
+   *text* at build time, so they are string literals in a file nginx serves to
+   anyone. `VITE_` variables are not secrets. This is the trap.
+
+Server-to-server HTTP has no concept of an origin, so the hop sidesteps CORS
+entirely and keeps the credential on the host.
+
+### Shape
+
+```
+browser ──> nginx :80 ──┬── /            static dist/
+                        └── /api/  ────> constellation-api :8081
+                                             │ Authorization: Basic …
+                                             ▼
+                                         verifone.atlassian.net
+```
+
+`handler.ts` is mounted as **Vite middleware** in dev and served over `node:http`
+in production — the same module at the same URL, so "works locally" and "works on
+the host" cannot drift. `vite.config.ts` loads it via `ssrLoadModule`, so editing
+the server hot-reloads.
+
+The dev plugin reads `.env` with `loadEnv(mode, cwd, '')` — the empty prefix is
+deliberate, because the variables must **not** be `VITE_`-prefixed.
+
+### How a galaxy is built (`server/galaxy.ts`)
+
+1. One JQL search for the epics. **The instance rejects unbounded JQL**, so the
+   query always carries a restriction. `JIRA_EPIC_JQL` overrides the default
+   label query outright — that is the escape hatch for before the label exists.
+2. Walk each tree level by level: `parent in (<keys from the level above>)` until
+   a level returns nothing. `parent = <epic>` alone reaches only L1. Depth-agnostic,
+   one round trip per level, no label discipline needed below the epic. A `seen`
+   set guards against a cyclic hierarchy re-querying forever.
+3. Map fields. Status: `status.name` against `JIRA_STATUS_*` first, else
+   `statusCategory.key`. `blocked` is unreachable by fallback — Jira has no such
+   category — so it comes only from `JIRA_STATUS_BLOCKED`. `description` is ADF
+   and is flattened to text. Level is tree depth, clamped to 3 and counted.
+4. Dependencies from issue links only. **Both directions are read**, so every
+   link surfaces twice (once from each end) and is de-duplicated by
+   `blocker>blocked`. Reading both ends also means a link survives when only one
+   of its two issues is inside the fetch.
+5. `deriveGalaxy()` runs on the **client**, so every source gets the same roll-up.
+
+### Link direction — the thing to get right
+
+For a link on issue X, Jira gives either `outwardIssue` or `inwardIssue`, and that
+is the discriminator:
+
+| Entry on X | Reads as | Blocker |
+| --- | --- | --- |
+| `outwardIssue: B`, type in `JIRA_BLOCKS_LINK_TYPES` | X *blocks* B | X |
+| `inwardIssue: B`, type in `JIRA_BLOCKS_LINK_TYPES` | X *is blocked by* B | B |
+
+A type phrased the other way round — an outward phrase of "depends on", where the
+*outward* issue is the dependent — belongs in `JIRA_DEPENDS_LINK_TYPES`, which
+flips the mapping. **Putting a type in the wrong list reverses every arrow it
+produces**, which is a silent, plausible-looking error. Check the phrasing in
+Jira Settings → Issues → Issue linking.
+
+### Cross-constellation dependencies
+
+`engine/layout.ts` positions one constellation at a time, so a link to a ticket in
+another epic has no coordinates to draw to. The naive fix — filter it out at
+ingest — is wrong in one direction and it matters:
+
+- *Our ticket is blocked by an outsider*: mild. Colour means effect on others
+  (principle 1), so it does not change this star; only the panel loses the reason.
+- *An outsider is blocked by our ticket*: **our ticket genuinely is a blocker and
+  should be red**, but the link record lives in the other constellation's
+  `blockedBy`, so this layout would never see it. `blocks` stays 0, the star
+  renders grey `unlit`, and the galaxy's "blocking" headline under-reports.
+
+So: counted, not drawn. `blocksExternal` folds into `StarNode.blocks` (the star
+goes red correctly, no geometry change), `blockersOf()` counts it, and
+`TicketPanel` lists it as an inert text row. The team says this never happens in
+practice; it is built so that it cannot be silently wrong if it starts to.
+
+### Caching and failure
+
+TTL cache with **single-flight**: three people opening the standup screen at once
+produce one Jira fetch. `?refresh=1` bypasses it. Failures are deliberately **not**
+cached, so a fixed credential takes effect on the next request rather than after
+the TTL.
+
+- Missing config fails at boot **and** is served over HTTP, so a
+  misconfiguration shows up in the app rather than only in container logs.
+- `PORT` is read independently of config validation. It was not, at first — and a
+  misconfigured container bound the wrong port, so nginx got a connection failure
+  instead of the actionable message, defeating the point.
+- `/healthz` is independent of the Jira config on purpose: when credentials are
+  wrong the container's job is to *serve the error*, so it must come up healthy
+  in order to do it.
+- 401/403/429 map to messages naming what to check. The token appears in no log
+  and no response body.
+- `search()` tries `POST /rest/api/3/search/jql` (token paging) and falls back
+  once to `POST /rest/api/3/search` (offset paging) on 404/410, remembering which
+  the instance speaks. Atlassian has been migrating between the two; this avoids
+  hard-coding a guess. Only the *first* attempt may fall back — switching
+  mid-pagination would restart paging.
+
+### nginx
+
+`proxy_pass http://api:8081` uses a **literal hostname**, which nginx resolves
+once at startup and exits if it is missing — hence `depends_on: service_healthy`.
+A variable plus `resolver` would re-resolve per request, but the resolver address
+differs between Docker and Podman and these files must work on both. Consequence:
+restarting `api` alone may leave the web container 502ing until it restarts too.
+The api healthcheck runs every 10s rather than 30s because that interval is also
+the deploy's dead time (31s → 12s cold start).

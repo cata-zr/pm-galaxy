@@ -1,16 +1,88 @@
-# `docker compose up -d` is all this needs — it builds the image on first run.
+# `docker compose up -d` is all this needs — it builds both images on first run.
 # Deliberately plain Compose spec, no engine-specific features: this is run with
 # podman locally and docker on the AWS host.
 #
 # There is no `version:` key on purpose; it has been obsolete since Compose v2
 # and current versions warn about it.
+#
+# Configuration lives in a `.env` file beside this one — see `.env.example`.
+# Values are interpolated below rather than passed with `env_file:` so that a
+# missing .env is not a hard error, and so every variable the app reads is
+# visible in one place.
 
 services:
+  # The Jira adapter. Exists because a browser cannot call Jira directly: the
+  # REST API on *.atlassian.net returns no Access-Control-Allow-Origin for our
+  # origin, so the preflight is refused, and an Atlassian API token carries the
+  # account's full permissions so it must never reach the browser bundle.
+  api:
+    build:
+      context: .
+      target: api
+    image: project-constellation-api:latest
+    container_name: constellation-api
+    restart: unless-stopped
+
+    # No `ports:` on purpose. This service is reachable only through the web
+    # container's /api/ proxy, so the Jira token never sits behind an open port.
+    expose:
+      - "8081"
+
+    environment:
+      PORT: "8081"
+      # `dummy` serves the built-in fixture instead of calling Jira — the way to
+      # work on the visual layer with no connection. Anything else means Jira.
+      CONSTELLATION_SOURCE: ${CONSTELLATION_SOURCE:-jira}
+
+      # Site origin. A trailing /jira or / is stripped, so pasting the URL
+      # straight out of the browser works.
+      JIRA_BASE_URL: ${JIRA_BASE_URL:-}
+      # Atlassian Cloud basic auth is email:token, not the token alone.
+      JIRA_EMAIL: ${JIRA_EMAIL:-}
+      JIRA_API_TOKEN: ${JIRA_API_TOKEN:-}
+
+      # Epic discovery. JIRA_EPIC_JQL wins outright when set.
+      CONSTELLATION_LABEL: ${CONSTELLATION_LABEL:-constellation}
+      JIRA_EPIC_JQL: ${JIRA_EPIC_JQL:-}
+
+      # Dependencies come from issue links, never from a status.
+      JIRA_BLOCKS_LINK_TYPES: ${JIRA_BLOCKS_LINK_TYPES:-Blocks}
+      JIRA_DEPENDS_LINK_TYPES: ${JIRA_DEPENDS_LINK_TYPES:-}
+
+      # Jira status names → the model's four statuses. Several Jira statuses map
+      # onto one of ours, and only this instance knows which.
+      JIRA_STATUS_TODO: ${JIRA_STATUS_TODO:-}
+      JIRA_STATUS_IN_PROGRESS: ${JIRA_STATUS_IN_PROGRESS:-}
+      JIRA_STATUS_BLOCKED: ${JIRA_STATUS_BLOCKED:-}
+      JIRA_STATUS_DONE: ${JIRA_STATUS_DONE:-}
+
+      JIRA_STORY_POINTS_FIELD: ${JIRA_STORY_POINTS_FIELD:-customfield_10016}
+      GALAXY_CACHE_TTL: ${GALAXY_CACHE_TTL:-120}
+
+    # Deliberately independent of the Jira configuration: when credentials are
+    # wrong this container's job is to *serve the error message*, so it has to
+    # come up healthy in order to do it.
+    # Probed every 10s rather than 30s: the web container waits for this to pass
+    # before nginx starts, so the interval is also the deploy's dead time.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8081/healthz"]
+      interval: 10s
+      timeout: 3s
+      start_period: 3s
+      retries: 5
+
   constellation:
     build:
       context: .
     image: project-constellation:latest
     container_name: constellation
+
+    # nginx resolves the `api` hostname once, when it loads its config, and
+    # exits if the name does not resolve. Waiting for api to be healthy — not
+    # merely started — is what keeps `up -d` from being a race.
+    depends_on:
+      api:
+        condition: service_healthy
 
     # The whole point of running this in a container is a URL that keeps
     # working. Without a restart policy the service does not come back after a

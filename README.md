@@ -6,28 +6,44 @@ when its ticket is done**. Dependencies are drawn as flowing arcs, and the ticke
 other work is waiting on burn hottest, so "what is holding us up" is visible from
 across the room.
 
-Currently running on **dummy data** — no Jira connection yet (that is the next step;
-see [Wiring up Jira](#wiring-up-jira)).
+Data comes from **Jira**, discovered by label. See
+[Connecting Jira](#connecting-jira) for the configuration, which is all runtime
+environment — the same image runs locally and on the server.
 
 ## Run it
 
 ```bash
 npm install
-npm run dev      # http://localhost:5173
+cp .env.example .env   # then fill in JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN
+npm run dev            # http://localhost:5173
 ```
 
-`npm run build` produces a static bundle in `dist/` — it is a plain SPA, so it can
-be dropped on any static host or opened through `npm run preview`.
+No Jira to hand? `CONSTELLATION_SOURCE=dummy` serves a built-in fixture of five
+epics and ~200 tickets instead — enough to work on the visual layer with no
+connection at all.
+
+`npm run build` produces three things: the browser bundle in `dist/`, and the API
+in `dist-server/`. The app is no longer a pure static SPA: it needs the small API
+beside it, because **a browser cannot call Jira directly** (see below).
 
 ## Deploy it
 
 ```bash
-docker compose up -d          # builds the image on first run, then serves on :8080
+cp .env.example .env          # fill in the Jira connection first
+docker compose up -d          # builds both images on first run, serves on :8080
 ```
 
-That is the whole deployment. The image is a two-stage build — Node compiles the
-bundle, then the result is copied into nginx and the toolchain is thrown away, so
-what ships is ~70 MB and contains no source, no `node_modules` and no build tools.
+That is the whole deployment. Two containers come up:
+
+| Service | What it is |
+| --- | --- |
+| `constellation` | nginx serving the browser bundle, and proxying `/api/` to the other one. The only service with a published port. |
+| `constellation-api` | The Jira adapter. Holds the API token, talks to Jira server-to-server, exposes one read-only route. **No published port** — reachable only through the proxy. |
+
+Node compiles both, then the toolchain is thrown away: the web image is ~70 MB of
+nginx plus static files, and the api image is Alpine Node plus a single bundled
+JS file — it has no `node_modules` at all, because the only thing the server
+imports is `node:http`.
 
 | | |
 | --- | --- |
@@ -35,6 +51,13 @@ what ships is ~70 MB and contains no source, no `node_modules` and no build tool
 | Restart | `unless-stopped`, so the service returns after a host reboot. Without this the URL quietly dies the first time the box restarts. |
 | Health | `GET /healthz` returns `ok`; Compose polls it every 30s, so `docker ps` reports the container healthy rather than merely running. |
 | Redeploy | `docker compose up -d --build` after a `git pull`. |
+| Config | `.env` beside the compose file, read at **runtime** by the api container. Never rebuild to change a setting. |
+
+The web container waits for the api to report healthy before starting, because
+nginx resolves the `api` hostname once when it loads its config and exits if the
+name is missing. One consequence worth knowing: if you restart `constellation-api`
+on its own it may come back on a new address, and the web container will return
+502 until it is restarted too. `docker compose restart` avoids the whole issue.
 
 Caching is split deliberately: Vite fingerprints filenames under `/assets/`, so
 those are served `immutable` for a year, while `index.html` is sent `no-cache`.
@@ -135,54 +158,158 @@ src/
   model/dummy.ts    Deterministic fake galaxy: 5 epics, ~200 tickets, real-ish deps,
                     and one epic per due-date state (far off, soon, overdue, none)
   model/derive.ts   Rolls leaf statuses up the tree (parents summarise children)
-  model/source.ts   The single seam between UI and data — swap in Jira here
+  model/source.ts   The single seam between UI and data — fetches /api/galaxy
   engine/layout.ts  Ticket tree → star positions: a radial tidy tree, so subtrees
                     own an angular wedge and their links can never cross
   engine/renderer.ts  Canvas painter: background, links, stars, labels
   engine/camera.ts  Pan/zoom maths and hit testing
   engine/theme.ts   The visual language: status → colour, glow, pulse
   components/       React shell: canvas host, galaxy map, ticket panel, legend
+
+server/             The Jira adapter. Never reaches the browser.
+  config.ts         Environment parsing, validation, base-URL normalisation
+  jira.ts           REST client: auth, pagination, error mapping
+  galaxy.ts         Jira JSON → the domain model above
+  cache.ts          TTL cache with single-flight
+  handler.ts        The one route, shared by dev middleware and production
+  main.ts           node:http entry point (production only)
 ```
 
 Rendering is plain canvas 2D, no graph library. The layout is computed once per
 epic and cached; the render loop only reads it, which keeps 170+ animated stars at
 60fps.
 
-## Wiring up Jira
+## Connecting Jira
 
-Everything Jira-specific will live behind `GalaxySource` in `src/model/source.ts`.
-Nothing else in the app needs to change.
+All the Jira-specific code lives in `server/` and never reaches the browser. The
+UI only ever sees the domain model, so the app itself has no idea where its data
+came from.
 
-A browser cannot call Jira directly (CORS, and the token must not ship in the
-bundle), so this needs a thin local proxy — a ~50-line Node/Express or Vite
-middleware that holds the PAT in an env var and exposes `GET /api/galaxy`.
+### Why there is a server at all
 
-Sketch of what the proxy does:
+A browser cannot call Jira directly, for two independent reasons:
 
-1. Find the epics:
-   `search?jql=labels = "constellation" AND issuetype = Epic`
-2. For each epic, pull the tree. Either
-   `jql=parent = <epicKey>` then recurse per level, or — if the team adopts an epic
-   label — one query per epic: `jql=labels = "<epic-label>"`, which is a single
-   round trip and covers L3 for free.
-3. Map each issue: `fields.status.statusCategory.key` → `done` / `in_progress` /
-   `todo`; `fields.issuelinks` where `type.inward === "is blocked by"` →
-   `blockedBy[]`; `fields.parent.key` → `parent`; `fields.duedate` → `dueDate`,
-   which is already a plain `YYYY-MM-DD` and maps straight across. Only the
-   epic's due date is shown on the map, but any issue may carry one.
-4. Hand the result to `deriveGalaxy()` — parent statuses are computed, never read
-   from Jira, so a Jira epic left open by mistake cannot dim a finished map (and
-   vice versa).
+1. **CORS.** The REST API on `*.atlassian.net` returns no
+   `Access-Control-Allow-Origin` for our origin, so the browser's preflight is
+   refused and the response is discarded — even when Jira answered it perfectly
+   well. This has nothing to do with being authenticated; origin policy is
+   enforced by the browser, not by Jira, and being correctly authenticated is
+   exactly the case it is strictest about.
+2. **The token.** An Atlassian API token is **not scoped** — it carries the full
+   permissions of your account across Jira and Confluence. Anything the browser
+   can send, a user can read, and Vite substitutes `VITE_*` variables into the JS
+   text at build time, so a token stored that way is a plain string in a file
+   nginx serves to the world.
 
-Fields worth requesting explicitly to keep the payload small:
-`key,summary,description,status,assignee,parent,issuelinks,labels,updated,duedate,customfield_10016`
-(the last one is story points).
+The api container fixes both. Server-to-server HTTP has no concept of an origin,
+so CORS simply does not apply, and the credential never leaves the host. It is
+deliberately **not** a general Jira proxy: one read-only route, one response
+shape. A route that forwarded arbitrary Jira paths would hand anyone who can
+reach the app the full power of the token, including writes.
 
-Open questions to settle before that work starts:
+### Configuration
 
-- Label vs. `parent` traversal for finding a project's tickets — the label approach
-  is one query and depth-agnostic, but relies on people applying it.
-- Which Jira states count as "blocked" in your workflow (only leaves need it).
-- Whether 14 days is the right "due soon" window for the team's cadence
-  (`NEAR_DUE_DAYS` in `src/model/types.ts`) — it was a default, not a decision.
-- Refresh model: on load only, or poll every N minutes with a "last synced" stamp.
+All runtime environment, in `.env` beside the compose file. `.env.example`
+documents every variable; the ones that matter:
+
+| Variable | Notes |
+| --- | --- |
+| `JIRA_BASE_URL` | Site origin. A trailing `/jira` or `/` is stripped, so the URL copied out of the browser works as-is. |
+| `JIRA_EMAIL` | Atlassian Cloud basic auth is `email:token` — the token alone is not enough. |
+| `JIRA_API_TOKEN` | From [id.atlassian.com](https://id.atlassian.com/manage-profile/security/api-tokens). Treat it as a password. |
+| `CONSTELLATION_LABEL` | Epic discovery: `labels = "<label>" AND issuetype = Epic`. |
+| `JIRA_EPIC_JQL` | Escape hatch — replaces the query above outright. Useful before the label exists anywhere. |
+| `JIRA_BLOCKS_LINK_TYPES` | Link types where the **outward** issue is the blocker, like Jira's built-in `Blocks`. |
+| `JIRA_DEPENDS_LINK_TYPES` | Link types phrased the other way round, where the outward issue is the one that *depends*. |
+| `JIRA_STATUS_*` | Jira status **names** → the model's four statuses. Several Jira statuses legitimately mean the same thing. |
+| `GALAXY_CACHE_TTL` | Seconds a fetched galaxy is held. Concurrent requests share one fetch regardless. |
+| `CONSTELLATION_SOURCE` | `dummy` serves the fixture instead of calling Jira. |
+
+Missing credentials fail at boot with a message naming the variable, and the same
+message is served over HTTP — so a misconfiguration shows up in the app rather
+than only in container logs.
+
+### How the data is built
+
+1. **Find the epics** with one JQL search. Note this instance rejects unbounded
+   JQL, so the query always carries a restriction.
+2. **Walk each tree a level at a time**: `parent in (<keys from the level above>)`,
+   repeating until a level comes back empty. `parent = <epic>` alone only reaches
+   L1, which is why it loops. Depth-agnostic, needs no label discipline below the
+   epic, and costs one round trip per level.
+3. **Map the fields.** `fields.status.name` against `JIRA_STATUS_*` first, falling
+   back to `statusCategory.key`; `fields.parent.key` → `parent`;
+   `fields.duedate` → `dueDate` (already `YYYY-MM-DD`); `description` is an ADF
+   document and gets flattened to text.
+4. **Read dependencies from issue links, never from a status.** Both directions
+   are read, so each link surfaces twice and is de-duplicated. Direction follows
+   Jira's convention: on issue X, an `outwardIssue` means "X *blocks* that one"
+   and an `inwardIssue` means "X *is blocked by* that one".
+5. **Roll statuses up on the client** via `deriveGalaxy()`. Parent statuses are
+   always computed, never read from Jira, so an epic left open by mistake cannot
+   dim a finished map.
+
+### Two things worth knowing
+
+**A ticket's own status and its dependencies are separate ideas.** `blocked` is a
+status some Jira workflows use — "I am stuck" — and it is configured through
+`JIRA_STATUS_BLOCKED`. Whether other work is *waiting* on a ticket comes only
+from issue links. A blocked leaf gets a slowly turning belt of debris; a ticket
+others are waiting on burns red. They compose, and either can happen without the
+other.
+
+**Dependencies that cross between constellations are counted but not drawn.**
+`engine/layout.ts` positions one constellation at a time, so a link to a ticket in
+another epic has no star to point at. Dropping it would be worse than not drawing
+it — a ticket holding up another project would render as a quiet grey star and the
+galaxy's "blocking" total would under-report. So it is folded into the blocking
+count and listed as plain text in the ticket panel.
+
+### Troubleshooting: `npm run diagnose`
+
+```bash
+npm run diagnose
+```
+
+Reads `.env`, reuses the server's own config module, and prints what the app
+actually sends: the normalised base URL, the effective epic JQL, which account
+the token resolves to, then progressively looser searches so the clause that
+excludes everything names itself. Read-only — it runs searches and nothing else,
+and prints no token.
+
+**"No epics found" when the same JQL works in Jira.** Jira answers an
+unaccepted credential by serving the request **anonymously** rather than
+refusing it, and says so only in an `x-seraph-loginreason: AUTHENTICATED_FAILED`
+header. A search then returns `200` with zero issues, because an anonymous
+caller can browse no projects — which looks exactly like a label that matches
+nothing. The adapter now checks that header and reports the real cause, but if
+you see this symptom on an older build, it is the token, not the query.
+
+Tokens that fail this way are usually expired or revoked, **created through
+"API tokens with scopes"** (Constellation needs a plain API token), or issued
+from a different Atlassian account than `JIRA_EMAIL`.
+
+### Diagnostics
+
+The API reports what it noticed, and the app shows it in a banner rather than a
+log: Jira statuses that matched no mapping (with the names, so they can be added),
+tickets found deeper than L3 and clamped to it, and dependencies crossing between
+constellations. An unmapped status is otherwise discovered by noticing a star is
+the wrong colour.
+
+### Still open
+
+- Which link types the team actually uses. `Blocks` exists; there is no `Depends`
+  link type in this instance, so if that is the second one in use it goes by
+  another name — and if its outward phrase reads "depends on" it belongs in
+  `JIRA_DEPENDS_LINK_TYPES`, not `JIRA_BLOCKS_LINK_TYPES`, or every arrow it
+  produces points the wrong way.
+- Sprint is not mapped. It is a custom field whose id differs per instance, so the
+  panel shows `—` until `JIRA_SPRINT_FIELD` is added.
+- Story points default to `customfield_10016`. Verify it on your instance.
+- Whether 14 days is the right "due soon" window (`NEAR_DUE_DAYS` in
+  `src/model/types.ts`) — it was a default, not a decision.
+- Refresh is manual (a button, plus a `synced HH:MM` stamp). Polling every N
+  minutes is the obvious next step if the map lives on a wall screen.
+- The app has **no authentication**. Anyone who can reach the host can read every
+  labelled epic.

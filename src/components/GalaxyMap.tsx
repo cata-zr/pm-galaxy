@@ -198,7 +198,9 @@ export function GalaxyMap({
                     <span>
                       <strong>{Math.round(p.ratio * 100)}%</strong> lit
                     </span>
-                    <span>{p.total} stars</span>
+                    <span>
+                      {p.total} {p.total === 1 ? 'star' : 'stars'}
+                    </span>
                     {p.inProgress > 0 && (
                       <span className="stat-progress">{p.inProgress} active</span>
                     )}

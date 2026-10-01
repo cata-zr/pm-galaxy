@@ -186,7 +186,12 @@ export function layoutConstellation(c: Constellation): Layout {
   const place = (parentNode: StarNode, centre: number, wedge: number, radius: number) => {
     const kids = orderSiblings(childTickets.get(parentNode.key) ?? []);
     if (!kids.length) return;
-    const level = (parentNode.level + 1) as Level;
+    // Clamped, because a real Jira hierarchy can be deeper than the four levels
+    // the model has sizes for: the source caps `Ticket.level` at 3, so a level-3
+    // parent may have level-3 children. Without the clamp this reads
+    // RING_GAP[4] === undefined, every distance below becomes NaN, and the NaN
+    // propagates into `extent` and blanks the whole canvas.
+    const level = Math.min(parentNode.level + 1, 3) as Level;
     const gap = level === 1 ? ring1 : RING_GAP[level];
     const total = kids.reduce((sum, k) => sum + weightOf(k.key), 0);
     // Leave a margin so adjacent subtrees keep a visible gutter between them.
@@ -220,6 +225,9 @@ export function layoutConstellation(c: Constellation): Layout {
   const links: LinkEdge[] = [];
   for (const n of nodes) {
     if (n.parent) links.push({ from: n.parent, to: n, kind: 'child' });
+    // Dependents in another constellation have no node to draw an arc to, but
+    // they are still work waiting on this ticket, so they count towards red.
+    n.blocks += n.ticket.blocksExternal?.length ?? 0;
     for (const blocker of n.ticket.blockedBy) {
       const from = byKey.get(blocker);
       if (!from) continue;

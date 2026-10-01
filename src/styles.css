@@ -98,23 +98,126 @@ button {
   white-space: nowrap;
 }
 
+.synced {
+  color: rgba(150, 162, 196, 0.7);
+}
+
+/* Sits after .source-label, which claims the free space with margin-left:auto. */
+.refresh {
+  flex: none;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text-dim);
+  background: rgba(120, 150, 220, 0.08);
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.refresh:hover:not(:disabled) {
+  color: var(--text);
+  border-color: rgba(255, 194, 71, 0.4);
+}
+
+.refresh:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .content {
   position: relative;
   flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .empty {
   display: grid;
   place-items: center;
-  height: 100%;
+  align-content: center;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+  padding: 0 32px;
+  text-align: center;
   color: var(--text-dim);
+}
+
+.empty h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.empty-detail {
+  margin: 0;
+  max-width: 60ch;
+  line-height: 1.6;
+  font-size: 13px;
+}
+
+.empty-detail code {
+  padding: 1px 5px;
+  font-size: 12px;
+  color: var(--accent);
+  background: rgba(255, 194, 71, 0.1);
+  border-radius: 4px;
+}
+
+.chip-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text);
+  background: rgba(120, 150, 220, 0.12);
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+/* Load-time diagnostics from the source: a mis-set env var should announce
+   itself rather than show up as a star in the wrong colour. */
+.notice {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  flex: none;
+  margin: 16px 32px 0;
+  padding: 12px 14px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-dim);
+  background: rgba(255, 182, 72, 0.07);
+  border: 1px solid rgba(255, 182, 72, 0.28);
+  border-radius: 10px;
+}
+
+.notice-error {
+  color: #ffc9c2;
+  background: rgba(255, 92, 78, 0.08);
+  border-color: rgba(255, 92, 78, 0.35);
+}
+
+.notice-body {
+  flex: 1;
+}
+
+.notice-body p {
+  margin: 0 0 6px;
+}
+
+.notice-body p:last-child {
+  margin-bottom: 0;
 }
 
 /* ----------------------------------------------------------- galaxy map */
 
 .galaxy {
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 28px 32px 48px;
   background:
@@ -736,6 +839,21 @@ button {
   height: 8px;
   border-radius: 50%;
   flex: none;
+}
+
+/* A dependency outside this constellation. Deliberately not a button. */
+.relation-external {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.relation-external .relation-title {
+  font-style: italic;
+}
+
+.dot-external {
+  background: #39415a;
+  border: 1px dashed rgba(194, 205, 232, 0.8);
 }
 
 .dot-todo {
